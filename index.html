@@ -1643,7 +1643,7 @@ function dbSet(key, value){
    - une synchronisation périodique récupère ce que d'autres appareils ont écrit et met à jour le local.
    Tant que TEKOULO_API_URL n'est pas configuré (ou que le serveur est injoignable), l'application
    continue de fonctionner en 100% local comme avant — aucune fonctionnalité n'est cassée. */
-const TEKOULO_API_URL = null; // Render désactivé : remplacé par Google Drive (voir bloc SYNCHRONISATION GOOGLE DRIVE ci-dessous)
+const TEKOULO_API_URL = 'https://summer-sky-9498.yombounoalbert69.workers.dev'; // Ancien serveur Render remplacé par un Cloudflare Worker (assistant IA uniquement ; le stockage des données reste sur Google Drive, voir bloc SYNCHRONISATION GOOGLE DRIVE ci-dessous)
 let TEKOULO_TOKEN = sessionStorage.getItem('tekoulo_token') || null;
 
 /* ==================== SYNCHRONISATION GOOGLE DRIVE ====================
