@@ -1557,8 +1557,14 @@ function initGoogleDriveAuth(){
         majStatutGoogleDrive('✅ Connecté à Google Drive.');
         demarrerSynchronisationAutomatique();
       } else {
-        majStatutGoogleDrive('⛔ Connexion à Google Drive refusée ou annulée.', true);
+        const detail = resp ? ((resp.error||'')+(resp.error_description?(' — '+resp.error_description):'')) : 'aucune réponse reçue';
+        majStatutGoogleDrive('⛔ Connexion refusée : '+(detail||'raison inconnue'), true);
+        try{ alert('Détail technique Google Drive :\n'+JSON.stringify(resp)); }catch(e){}
       }
+    },
+    error_callback: (err)=>{
+      try{ alert('Erreur avant même la fenêtre Google :\n'+JSON.stringify(err)); }catch(e){}
+      majStatutGoogleDrive('⛔ Erreur Google Drive : '+((err&&err.type)||'inconnue'), true);
     }
   });
 }
