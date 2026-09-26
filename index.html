@@ -1702,6 +1702,14 @@ let googleTokenClient = null;
 let googleDriveConnecte = false;
 const _driveFileIdCache = {}; // cleComplete -> id de fichier Drive (évite de le rechercher à chaque fois)
 
+/* Désactivation persistante (choix explicite de l'utilisateur, via le bouton du tableau de bord) :
+   tant que ce drapeau est présent, l'application ne tente PLUS de se reconnecter toute seule à
+   Google Drive au chargement de la page — c'est ce qui manquait pour distinguer "pas encore
+   reconnecté après une actualisation" (bug) de "désactivé volontairement" (choix de l'utilisateur). */
+function googleDriveSyncDesactiveeParUtilisateur(){
+  try{ return localStorage.getItem(DB_PREFIX+'google_sync_desactive')==='1'; }catch(e){ return false; }
+}
+let _googleReconnexionAutoEnCours = false; // vrai uniquement pendant la tentative silencieuse au chargement — évite d'alarmer l'utilisateur avec une alerte technique s'il n'y a personne pour cliquer sur "réessayer"
 function initGoogleDriveAuth(){
   if(!GOOGLE_CLIENT_ID){ majStatutGoogleDrive('⚠️ Compte Google non configuré. Contactez la personne technique pour renseigner le nouveau Client ID.', true); return; }
   if(typeof google==='undefined' || !google.accounts || !google.accounts.oauth2){ setTimeout(initGoogleDriveAuth, 400); return; }
@@ -1709,12 +1717,19 @@ function initGoogleDriveAuth(){
     client_id: GOOGLE_CLIENT_ID,
     scope: GOOGLE_DRIVE_SCOPE,
     callback: (resp)=>{
+      const etaitAutomatique = _googleReconnexionAutoEnCours;
+      _googleReconnexionAutoEnCours = false;
       if(resp && resp.access_token){
         googleAccessToken = resp.access_token;
         googleDriveConnecte = true;
         try{ localStorage.setItem(DB_PREFIX+'google_autorise','1'); }catch(e){}
+        try{ localStorage.removeItem(DB_PREFIX+'google_sync_desactive'); }catch(e){} // une reconnexion réussie annule une désactivation précédente
         majStatutGoogleDrive('✅ Connecté à Google Drive.');
         demarrerSynchronisationAutomatique();
+      } else if(etaitAutomatique){
+        // Échec silencieux au chargement (ex. session Google expirée) : pas d'alerte intempestive,
+        // juste un statut discret. L'utilisateur peut toujours cliquer sur "Connecter Google Drive".
+        majStatutGoogleDrive('Non reconnecté automatiquement — cliquez sur « Connecter Google Drive » pour vous reconnecter.', true);
       } else {
         const detail = resp ? ((resp.error||'')+(resp.error_description?(' — '+resp.error_description):'')) : 'aucune réponse reçue';
         majStatutGoogleDrive('⛔ Connexion refusée : '+(detail||'raison inconnue'), true);
@@ -1722,10 +1737,27 @@ function initGoogleDriveAuth(){
       }
     },
     error_callback: (err)=>{
-      try{ alert('Erreur avant même la fenêtre Google :\n'+JSON.stringify(err)); }catch(e){}
+      const etaitAutomatique = _googleReconnexionAutoEnCours;
+      _googleReconnexionAutoEnCours = false;
       majStatutGoogleDrive('⛔ Erreur Google Drive : '+((err&&err.type)||'inconnue'), true);
+      if(!etaitAutomatique){
+        try{ alert('Erreur avant même la fenêtre Google :\n'+JSON.stringify(err)); }catch(e){}
+      }
     }
   });
+  // Reconnexion automatique et silencieuse : un jeton d'accès Google ne survit jamais à une
+  // actualisation de page (il n'est jamais stocké, par sécurité). Sans ceci, la session Google
+  // Drive semblait donc "se déconnecter toute seule" à chaque F5, alors qu'aucune déconnexion
+  // volontaire n'avait eu lieu — seul un nouveau jeton (silencieux, sans fenêtre, puisque déjà
+  // autorisé) est nécessaire. On ne le fait PAS si l'utilisateur a explicitement désactivé la
+  // synchronisation depuis le tableau de bord.
+  try{
+    const dejaAutorise = localStorage.getItem(DB_PREFIX+'google_autorise')==='1';
+    if(dejaAutorise && !googleDriveSyncDesactiveeParUtilisateur()){
+      _googleReconnexionAutoEnCours = true;
+      googleTokenClient.requestAccessToken({prompt:''});
+    }
+  }catch(e){}
 }
 function connecterGoogleDrive(){
   if(!GOOGLE_CLIENT_ID){ toast('Compte Google non configuré pour le moment. Contactez la personne technique.', true); return; }
@@ -1736,7 +1768,43 @@ function connecterGoogleDrive(){
 function deconnecterGoogleDrive(){
   try{ if(googleAccessToken && google.accounts && google.accounts.oauth2) google.accounts.oauth2.revoke(googleAccessToken, ()=>{}); }catch(e){}
   googleAccessToken = null; googleDriveConnecte = false;
+  arreterSynchronisationAutomatique();
   majStatutGoogleDrive('Déconnecté de Google Drive.');
+}
+/* ---------- Contrôle depuis le tableau de bord (bouton "Désactiver" / "Réactiver") ---------- */
+function desactiverSynchronisationGoogleDrive(){
+  if(!confirm('Désactiver la synchronisation Google Drive ?\n\nVos données resteront enregistrées normalement sur cet appareil, mais ne seront plus ni envoyées ni reçues tant que vous ne réactiverez pas la synchronisation.')) return;
+  try{ localStorage.setItem(DB_PREFIX+'google_sync_desactive','1'); }catch(e){}
+  deconnecterGoogleDrive();
+  majCarteSyncTableauDeBord();
+  toast('🔌 Synchronisation Google Drive désactivée.');
+}
+function reactiverSynchronisationGoogleDrive(){
+  try{ localStorage.removeItem(DB_PREFIX+'google_sync_desactive'); }catch(e){}
+  majCarteSyncTableauDeBord();
+  connecterGoogleDrive();
+}
+function basculerSyncDepuisTableauDeBord(){
+  if(googleDriveSyncDesactiveeParUtilisateur()) reactiverSynchronisationGoogleDrive();
+  else desactiverSynchronisationGoogleDrive();
+}
+function majCarteSyncTableauDeBord(){
+  const statutEl = document.getElementById('dash-drive-status');
+  const btn = document.getElementById('dash-drive-toggle-btn');
+  if(!statutEl || !btn) return; // la carte n'existe que sur la vue "Tableau de bord"
+  if(googleDriveSyncDesactiveeParUtilisateur()){
+    statutEl.innerHTML = '🔌 Synchronisation désactivée';
+    btn.textContent = '🔗 Réactiver la synchronisation';
+    btn.className = 'btn sm';
+  } else if(googleDriveConnecte){
+    statutEl.innerHTML = '✅ Connecté à Google Drive';
+    btn.textContent = '⛔ Désactiver';
+    btn.className = 'btn danger sm';
+  } else {
+    statutEl.innerHTML = '⏳ Non connecté pour le moment…';
+    btn.textContent = '⛔ Désactiver';
+    btn.className = 'btn ghost sm';
+  }
 }
 function majStatutGoogleDrive(message, estErreur){
   const statut = document.getElementById('sync-status');
@@ -1745,6 +1813,7 @@ function majStatutGoogleDrive(message, estErreur){
   if(btn) btn.textContent = googleDriveConnecte ? '🔄 Synchroniser' : '🔗 Connecter Google Drive';
   const btnDrive = document.getElementById('drive-connect-btn');
   if(btnDrive) btnDrive.textContent = googleDriveConnecte ? '✅ Google Drive connecté (déconnecter)' : '🔗 Connecter Google Drive';
+  majCarteSyncTableauDeBord();
 }
 function driveFileName(cleComplete){ return 'tekoulo__'+cleComplete.replace(/[^a-zA-Z0-9_]/g,'_')+'.json'; }
 let DERNIERE_ERREUR_SYNC = ''; // diagnostic : dernier message d'erreur technique Drive rencontré
@@ -1965,13 +2034,23 @@ async function synchroniserAnneeActive(){
   })();
   return _syncEnCoursPromise;
 }
+let _syncAutoIntervalId = null;
+let _majAppIntervalId = null;
+let _syncAutoDemarree = false;
 function demarrerSynchronisationAutomatique(){
+  if(_syncAutoDemarree) return; // évite les doublons d'intervalles si la fonction est appelée plusieurs fois
+  _syncAutoDemarree = true;
   synchroniserAnneeActive();
-  setInterval(synchroniserAnneeActive, 120000); // toutes les 2 minutes (au lieu de 20 s), pour laisser la main aux clics manuels
+  _syncAutoIntervalId = setInterval(synchroniserAnneeActive, 120000); // toutes les 2 minutes (au lieu de 20 s), pour laisser la main aux clics manuels
   window.addEventListener('online', synchroniserAnneeActive);
   verifierMiseAJourApp(true);
-  setInterval(()=>verifierMiseAJourApp(true), 15*60*1000); // revérifie toutes les 15 minutes
+  _majAppIntervalId = setInterval(()=>verifierMiseAJourApp(true), 15*60*1000); // revérifie toutes les 15 minutes
   window.addEventListener('online', ()=>verifierMiseAJourApp(true));
+}
+function arreterSynchronisationAutomatique(){
+  _syncAutoDemarree = false;
+  if(_syncAutoIntervalId){ clearInterval(_syncAutoIntervalId); _syncAutoIntervalId = null; }
+  if(_majAppIntervalId){ clearInterval(_majAppIntervalId); _majAppIntervalId = null; }
 }
 
 // Bouton "Synchroniser" du tableau de bord : premier clic = connexion à Google Drive (fenêtre Google),
@@ -11748,6 +11827,19 @@ function renderDashboard(container){
       </div>`}
     </div>
 
+    <div class="section-title" style="margin-top:22px;"><h3><span class="bar"></span>Synchronisation Google Drive</h3></div>
+    <div class="card pad" id="dash-drive-sync-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+        <div>
+          <div id="dash-drive-status" style="font-weight:700; font-size:13.5px;">…</div>
+          <div style="font-size:11.8px; color:var(--ink-soft); margin-top:3px; max-width:520px;">
+            L'application se reconnecte automatiquement à Google Drive à chaque ouverture. Utilisez ce bouton pour désactiver complètement la synchronisation (vos données restent enregistrées localement) ou pour la réactiver ensuite.
+          </div>
+        </div>
+        <button type="button" class="btn ghost sm" id="dash-drive-toggle-btn" onclick="basculerSyncDepuisTableauDeBord()">…</button>
+      </div>
+    </div>
+
     <div class="section-title" style="margin-top:22px;"><h3><span class="bar"></span>Situation financière</h3></div>
     <div class="card pad">
       <div class="finance-grid">
@@ -11883,6 +11975,7 @@ function renderDashboard(container){
         </div>`).join('')}
     </div>
   `;
+  majCarteSyncTableauDeBord();
 }
 function pct(a,b){ if(!b) return 0; return Math.round(a/b*100); }
 
