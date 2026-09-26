@@ -1762,8 +1762,13 @@ function initGoogleDriveAuth(){
 function connecterGoogleDrive(){
   if(!GOOGLE_CLIENT_ID){ toast('Compte Google non configuré pour le moment. Contactez la personne technique.', true); return; }
   if(!googleTokenClient){ toast('Google n\u2019est pas encore chargé, réessayez dans un instant.', true); return; }
-  const dejaAutorise = (function(){ try{ return localStorage.getItem(DB_PREFIX+'google_autorise')==='1'; }catch(e){ return false; } })();
-  googleTokenClient.requestAccessToken({prompt: dejaAutorise ? '' : 'consent'});
+  // Un clic manuel est une action volontaire : on ouvre toujours la vraie fenêtre de connexion
+  // Google (avec choix du compte), plutôt que la version « silencieuse » (prompt vide). Cette
+  // dernière repose sur une popup invisible qui échoue souvent sur mobile (erreur "Popup window
+  // closed") — seule la reconnexion automatique en arrière-plan au chargement de la page (voir
+  // initGoogleDriveAuth) utilise le mode silencieux, et échoue sans déranger l'utilisateur le cas
+  // échéant, puisqu'un simple clic ici suffit alors à se reconnecter normalement.
+  googleTokenClient.requestAccessToken({prompt:'select_account'});
 }
 function deconnecterGoogleDrive(){
   try{ if(googleAccessToken && google.accounts && google.accounts.oauth2) google.accounts.oauth2.revoke(googleAccessToken, ()=>{}); }catch(e){}
