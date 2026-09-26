@@ -1474,8 +1474,9 @@ let TEKOULO_TOKEN = sessionStorage.getItem('tekoulo_token') || null;
    un dossier Google Drive partagé (appartenant au compte Google de l'école). Toute la logique de
    fusion/merge existante (fusionnerCollections, file d'attente "pending", etc.) reste inchangée :
    seule la façon dont les données transitent vers/depuis "le serveur" change. */
+// Identifiants reconfigurés le 25/09/2026 avec le nouveau compte barohyombouno7@gmail.com.
 const GOOGLE_CLIENT_ID = '169405877176-rka8kdjl9o5q6b7b8dlthifttm7qc8bj.apps.googleusercontent.com';
-const GOOGLE_DRIVE_FOLDER_ID = '135ExcOSOkisXb8qJi4MmZQ-F-60TWg_c';
+const GOOGLE_DRIVE_FOLDER_ID = '1u27j3ij5Qa2CUg3sW0O0SJXKBqRUMTjU';
 const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const SYNC_BACKEND_ACTIF = true; // un backend de synchronisation (Google Drive) est configuré
 
@@ -1543,6 +1544,7 @@ let googleDriveConnecte = false;
 const _driveFileIdCache = {}; // cleComplete -> id de fichier Drive (évite de le rechercher à chaque fois)
 
 function initGoogleDriveAuth(){
+  if(!GOOGLE_CLIENT_ID){ majStatutGoogleDrive('⚠️ Compte Google non configuré. Contactez la personne technique pour renseigner le nouveau Client ID.', true); return; }
   if(typeof google==='undefined' || !google.accounts || !google.accounts.oauth2){ setTimeout(initGoogleDriveAuth, 400); return; }
   googleTokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
@@ -1561,6 +1563,7 @@ function initGoogleDriveAuth(){
   });
 }
 function connecterGoogleDrive(){
+  if(!GOOGLE_CLIENT_ID){ toast('Compte Google non configuré pour le moment. Contactez la personne technique.', true); return; }
   if(!googleTokenClient){ toast('Google n\u2019est pas encore chargé, réessayez dans un instant.', true); return; }
   const dejaAutorise = (function(){ try{ return localStorage.getItem(DB_PREFIX+'google_autorise')==='1'; }catch(e){ return false; } })();
   googleTokenClient.requestAccessToken({prompt: dejaAutorise ? '' : 'consent'});
