@@ -1588,9 +1588,21 @@ function majStatutGoogleDrive(message, estErreur){
   if(btnDrive) btnDrive.textContent = googleDriveConnecte ? '✅ Google Drive connecté (déconnecter)' : '🔗 Connecter Google Drive';
 }
 function driveFileName(cleComplete){ return 'tekoulo__'+cleComplete.replace(/[^a-zA-Z0-9_]/g,'_')+'.json'; }
+let DERNIERE_ERREUR_SYNC = ''; // diagnostic : dernier message d'erreur technique Drive rencontré
 async function driveRequete(url, options){
-  const res = await fetch(url, options);
+  let res;
+  try{
+    res = await fetch(url, options);
+  }catch(e){
+    DERNIERE_ERREUR_SYNC = 'fetch_failed: '+(e && e.message ? e.message : e);
+    throw e;
+  }
   if(res.status===401){ googleAccessToken = null; googleDriveConnecte = false; majStatutGoogleDrive('⛔ Session Google Drive expirée — reconnectez-vous.', true); }
+  if(!res.ok){
+    let corps = '';
+    try{ corps = await res.clone().text(); }catch(e){}
+    DERNIERE_ERREUR_SYNC = 'HTTP '+res.status+' sur '+url.split('?')[0]+(corps ? (' — '+corps.slice(0,300)) : '');
+  }
   return res;
 }
 async function driveTrouverFichier(nomFichier){
@@ -1820,7 +1832,8 @@ async function synchroniserManuellement(){
       } else if(echec){
         // Un ou plusieurs modules n'ont pas pu être vérifiés : on ne dit jamais "réussi" dans ce cas,
         // même si d'autres modules ont bien été synchronisés, pour ne pas donner une fausse assurance.
-        statut.innerHTML = '⛔ Échec — Google Drive n\u2019a pas répondu (réseau coupé, jeton expiré, ou dossier inaccessible). Vos données restent en sécurité en local ; réessayez dans 1 à 2 minutes. · '+heure;
+        statut.innerHTML = '⛔ Échec — Google Drive n\u2019a pas répondu. Vos données restent en sécurité en local ; réessayez dans 1 à 2 minutes. · '+heure
+          + (DERNIERE_ERREUR_SYNC ? ('<br><span style="font-size:10px;opacity:.85;">Détail : '+DERNIERE_ERREUR_SYNC.replace(/</g,'&lt;')+'</span>') : '');
       } else {
         statut.textContent = '✅ Réussi à '+heure+(nouveau ? ' — nouvelles données reçues, actualisez (F5) pour les afficher.' : ' — tout est à jour.');
       }
