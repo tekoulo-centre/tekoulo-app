@@ -110,8 +110,11 @@
     -webkit-background-clip:text; background-clip:text; color:transparent;
   }
   .albert-splash-tagline{
-    margin-top:10px; font-family:var(--sans); font-size:12.5px; letter-spacing:.3px;
-    color:rgba(230,238,255,.62); max-width:280px;
+    margin-top:10px; font-family:var(--sans); font-size:13.5px; letter-spacing:.3px;
+    color:rgba(230,238,255,.85); max-width:300px;
+  }
+  .albert-splash-tagline.albert-splash-sub{
+    margin-top:6px; font-size:11.5px; color:rgba(230,238,255,.5);
   }
   .albert-splash-loader{display:flex; gap:6px; margin-top:26px;}
   .albert-splash-loader span{
@@ -1183,8 +1186,9 @@
     <div class="albert-splash-logo-wrap">
       <img src="icon-512.png" alt="Albert Digital" class="albert-splash-logo" width="512" height="512" fetchpriority="high">
     </div>
-    <div class="albert-splash-word">ALBERT <span>DIGITAL</span></div>
-    <div class="albert-splash-tagline">Base de Données de Gestion — Collège Tekoulo Centre</div>
+    <div class="albert-splash-word">ALBERT <span>DIGITAL</span> GUINÉE</div>
+    <div class="albert-splash-tagline">Bienvenue dans l'application Albert Digital Guinée</div>
+    <div class="albert-splash-tagline albert-splash-sub">Collège Tekoulo Centre — Base de Données de Gestion</div>
     <div class="albert-splash-loader"><span></span><span></span><span></span></div>
   </div>
 </div>
@@ -16976,8 +16980,8 @@ async function assistantEnvoyerMessage(message, messageAffiche, pieceJointe){
 (function(){
   const splash = document.getElementById('albert-splash');
   if(!splash) return;
-  const MIN_DISPLAY_MS = 1500; // durée minimale à l'écran, même si tout charge instantanément
-  const MAX_WAIT_MS = 4000;    // filet de sécurité : ne jamais bloquer l'app plus de 4s
+  const MIN_DISPLAY_MS = 3000; // durée minimale à l'écran, même si tout charge instantanément
+  const MAX_WAIT_MS = 6000;    // filet de sécurité : ne jamais bloquer l'app plus de 6s
   const startedAt = Date.now();
   let dismissed = false;
   function dismiss(){
