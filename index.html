@@ -75,6 +75,63 @@
     background:radial-gradient(1100px 520px at 8% -8%, rgba(124,77,219,.08), transparent 55%), radial-gradient(900px 460px at 108% 6%, rgba(228,180,38,.06), transparent 55%), var(--cream);
   }
   .login-espace-titre{display:inline-block; margin:2px 0 12px; padding:5px 16px; border-radius:20px; background:var(--grad-emerald); color:#fff; font-weight:700; font-size:12.5px; letter-spacing:.4px;}
+
+  /* ===== Splash screen Albert Digital (écran de bienvenue au lancement) ===== */
+  #albert-splash{
+    position:fixed; inset:0; z-index:99999;
+    display:flex; align-items:center; justify-content:center;
+    background:
+      radial-gradient(900px 500px at 15% 10%, rgba(41,121,255,.16), transparent 60%),
+      radial-gradient(900px 550px at 88% 92%, rgba(80,160,255,.12), transparent 60%),
+      linear-gradient(160deg, #05070d 0%, #0a0f1c 55%, #050607 100%);
+    animation: albertSplashFadeIn .5s ease both;
+  }
+  #albert-splash.albert-splash-out{
+    animation: albertSplashFadeOut .55s cubic-bezier(.4,0,.2,1) both;
+    pointer-events:none;
+  }
+  .albert-splash-inner{
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; padding:0 24px;
+    animation: albertSplashRise .7s cubic-bezier(.2,.8,.2,1) both .05s;
+  }
+  .albert-splash-logo-wrap{
+    width:112px; height:112px; margin-bottom:18px;
+    filter: drop-shadow(0 8px 26px rgba(41,121,255,.35));
+    animation: albertSplashPulse 2.4s ease-in-out infinite;
+  }
+  .albert-splash-logo{width:100%; height:100%; object-fit:contain; border-radius:22px;}
+  .albert-splash-word{
+    font-family:var(--sans); font-weight:800; font-size:26px; letter-spacing:2px;
+    color:#f2f6ff; text-transform:uppercase;
+  }
+  .albert-splash-word span{
+    background:linear-gradient(90deg,#3d8bff,#8fc4ff);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .albert-splash-tagline{
+    margin-top:10px; font-family:var(--sans); font-size:12.5px; letter-spacing:.3px;
+    color:rgba(230,238,255,.62); max-width:280px;
+  }
+  .albert-splash-loader{display:flex; gap:6px; margin-top:26px;}
+  .albert-splash-loader span{
+    width:7px; height:7px; border-radius:50%;
+    background:linear-gradient(135deg,#3d8bff,#8fc4ff);
+    animation: albertSplashDot 1s ease-in-out infinite;
+  }
+  .albert-splash-loader span:nth-child(2){animation-delay:.15s;}
+  .albert-splash-loader span:nth-child(3){animation-delay:.3s;}
+
+  @keyframes albertSplashFadeIn{ from{opacity:0;} to{opacity:1;} }
+  @keyframes albertSplashFadeOut{ from{opacity:1; transform:translateY(0) scale(1);} to{opacity:0; transform:translateY(-18px) scale(.98);} }
+  @keyframes albertSplashRise{ from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);} }
+  @keyframes albertSplashPulse{ 0%,100%{transform:scale(1);} 50%{transform:scale(1.045);} }
+  @keyframes albertSplashDot{ 0%,80%,100%{opacity:.3; transform:scale(.75);} 40%{opacity:1; transform:scale(1);} }
+  @media (prefers-reduced-motion: reduce){
+    #albert-splash, #albert-splash.albert-splash-out, .albert-splash-inner, .albert-splash-logo-wrap, .albert-splash-loader span{
+      animation:none !important; transition:none !important;
+    }
+  }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
   body{
@@ -1119,6 +1176,18 @@
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
+
+<!-- ===================== SPLASH ALBERT DIGITAL ===================== -->
+<div id="albert-splash" role="status" aria-live="polite">
+  <div class="albert-splash-inner">
+    <div class="albert-splash-logo-wrap">
+      <img src="icon-512.png" alt="Albert Digital" class="albert-splash-logo" width="512" height="512" fetchpriority="high">
+    </div>
+    <div class="albert-splash-word">ALBERT <span>DIGITAL</span></div>
+    <div class="albert-splash-tagline">Base de Données de Gestion — Collège Tekoulo Centre</div>
+    <div class="albert-splash-loader"><span></span><span></span><span></span></div>
+  </div>
+</div>
 
 <div id="toast-host"></div>
 
@@ -4137,6 +4206,7 @@ function renderGuide(container){
       <a href="#g15n">15. Frais de scolarité et reçus</a>
       <a href="#g16n">16. Dictionnaire, présence et supervision</a>
       <a href="#g17">17. Fermeture de l'application</a>
+      <a href="#g17b">17 bis. Installer, désinstaller et transférer l'application</a>
       <a href="#g18">18. Foire aux questions</a>
       <a href="#g19">19. Aide-mémoire rapide</a>
     </div>
@@ -4769,6 +4839,35 @@ function renderGuide(container){
       <div class="guide-callout astuce"><b class="gc-label">💡 Astuce</b>Il n'est pas obligatoire de cliquer sur « Quitter » avant de fermer le navigateur. Ce bouton est surtout utile pour verrouiller l'accès si un autre utilisateur doit utiliser le même appareil.</div>
     </div>
 
+    <div class="guide-chapter" id="g17b">
+      <h2>17 bis. Installer, désinstaller et transférer l'application</h2>
+      <h3>17 bis.1 Installer sur un autre téléphone, ordinateur ou tablette</h3>
+      <p>L'application doit être accessible en ligne à une adresse (URL) unique — par exemple la page hébergée sur GitHub Pages ou sur le serveur en place — car le fichier <code>index.html</code> seul ne suffit pas : le <em>manifest.json</em> et le <em>service worker (sw.js)</em>, hébergés au même endroit, sont nécessaires à l'installation.</p>
+      <ol>
+        <li>Sur le nouvel appareil, ouvrez cette adresse dans Chrome ou Edge (Android, ordinateur) ou dans Safari (iPhone/iPad).</li>
+        <li><b>Android / ordinateur :</b> un bouton ou une icône « Installer » apparaît dans la barre d'adresse, ou dans le menu ⋮ → « Installer l'application ».</li>
+        <li><b>iPhone / iPad :</b> bouton Partager (carré avec flèche) → « Sur l'écran d'accueil ».</li>
+      </ol>
+      <div class="guide-callout info"><b class="gc-label">ℹ️ Remarque</b>L'installation crée un raccourci et permet un fonctionnement hors ligne grâce au service worker (chapitre 1), mais ne copie aucune donnée : chaque appareil part avec sa propre base, vide au départ (voir 17 bis.3).</div>
+      <h3>17 bis.2 Désinstaller</h3>
+      <p>Comme pour une application classique : appui long sur l'icône puis « Désinstaller » (ou Réglages → Applications sur Android ; glisser l'icône vers la corbeille sur ordinateur).</p>
+      <div class="guide-callout attention"><b class="gc-label">⚠️ Attention</b>Désinstaller l'icône ne supprime pas forcément les données enregistrées dans le navigateur. Pour tout effacer d'un appareil, il faut en plus vider les données du site dans les réglages du navigateur (ou utiliser « ✕ Réinitialiser toutes les données », chapitre 10.6).</div>
+      <h3>17 bis.3 Transférer les données vers un autre appareil</h3>
+      <p>Il n'existe pas de transfert automatique d'un appareil à l'autre : chaque installation est indépendante et les données (élèves, notes, paiements…) restent stockées localement dans le navigateur de chaque appareil (chapitre 1).</p>
+      <p>Pour faire suivre les données :</p>
+      <ul>
+        <li>Utilisez l'export/sauvegarde de l'application (« ⭳ Sauvegarder », chapitre 9.2) puis « ⭱ Restaurer » sur le nouvel appareil ;</li>
+        <li>ou reliez les deux appareils au même dossier Google Drive (chapitre 10 bis) pour une synchronisation automatique.</li>
+      </ul>
+      <h3>17 bis.4 Les mises à jour publiées sur GitHub sont-elles prises en compte ?</h3>
+      <p>Deux choses bien distinctes :</p>
+      <ul>
+        <li><b>Le code de l'application</b> (nouvelles fonctions, corrections) : si le fichier mis à jour est déposé à l'adresse déjà utilisée (GitHub Pages ou le lien suivi par le système de mise à jour intégré, chapitre 10 bis), les utilisateurs verront la nouvelle version au prochain chargement de la page.</li>
+        <li><b>Les données saisies</b> (élèves, notes, paiements, comptes) : elles ne se trouvent jamais dans le fichier déposé sur GitHub, seulement dans le navigateur de chaque appareil (ou sur Google Drive si la synchronisation est active). Déposer une nouvelle version du fichier sur GitHub ne touche donc jamais aux données déjà saisies — ni pour les ajouter, ni pour les effacer.</li>
+      </ul>
+      <div class="guide-callout astuce"><b class="gc-label">💡 Astuce</b>GitHub met à jour le fonctionnement de l'application ; seule la sauvegarde/restauration ou la synchronisation Google Drive transportent le contenu d'un appareil à l'autre.</div>
+    </div>
+
     <div class="guide-chapter" id="g18">
       <h2>18. Foire aux questions et dépannage</h2>
       <h3>J'ai oublié le mot de passe, que faire ?</h3>
@@ -4787,6 +4886,8 @@ function renderGuide(container){
       <p>Vérifiez les informations de l'établissement et les responsables du cycle dans le module Paramètres (chapitre 10.1), et le signataire choisi dans le menu déroulant du document (chapitre 8.3).</p>
       <h3>Puis-je utiliser l'application sur plusieurs appareils en même temps ?</h3>
       <p>Oui, si l'application est connectée à Google Drive (chapitre 10 bis) : les données saisies sur un appareil apparaissent automatiquement sur les autres après synchronisation. Sans connexion à Google Drive, utilisez la sauvegarde/restauration (chapitre 9) ou le transfert via Xender.</p>
+      <h3>Comment installer, désinstaller ou transférer l'application, et une mise à jour sur GitHub touche-t-elle mes données ?</h3>
+      <p>Voir le chapitre 17 bis, entièrement consacré à ces questions.</p>
     </div>
 
     <div class="guide-chapter" id="g19">
@@ -16864,6 +16965,37 @@ async function assistantEnvoyerMessage(message, messageAffiche, pieceJointe){
     <button onclick="assistantEnvoyer()">➤</button>
   </div>
 </div>
+
+<script>
+/* ===================== SPLASH ALBERT DIGITAL (v1) =====================
+   Écran de bienvenue affiché au lancement de l'application (icône bureau /
+   PWA / rechargement), avant l'affichage de la page d'accueil — sur le
+   principe du splash screen de Word. Purement cosmétique : ne modifie
+   aucune logique d'authentification ni d'affichage existante, il se
+   contente de se superposer puis de disparaître tout seul. */
+(function(){
+  const splash = document.getElementById('albert-splash');
+  if(!splash) return;
+  const MIN_DISPLAY_MS = 1500; // durée minimale à l'écran, même si tout charge instantanément
+  const MAX_WAIT_MS = 4000;    // filet de sécurité : ne jamais bloquer l'app plus de 4s
+  const startedAt = Date.now();
+  let dismissed = false;
+  function dismiss(){
+    if(dismissed) return;
+    dismissed = true;
+    const elapsed = Date.now() - startedAt;
+    const wait = Math.max(0, MIN_DISPLAY_MS - elapsed);
+    setTimeout(()=>{
+      splash.classList.add('albert-splash-out');
+      splash.addEventListener('transitionend', ()=>{ splash.remove(); }, {once:true});
+      setTimeout(()=>{ if(splash.parentNode) splash.remove(); }, 900); // filet si transitionend ne se déclenche pas
+    }, wait);
+  }
+  if(document.readyState === 'complete'){ dismiss(); }
+  else{ window.addEventListener('load', dismiss); }
+  setTimeout(dismiss, MAX_WAIT_MS);
+})();
+</script>
 
 </body>
 </html>
