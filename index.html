@@ -1775,10 +1775,12 @@ const CLES_SYNCHRONISEES = [
 // des requêtes en parallèle qui se gênent. Le filet de sécurité (45 s) libère le verrou même en cas
 // d'anomalie imprévue, pour ne jamais bloquer la synchronisation de façon permanente.
 let TEKOULO_SYNC_EN_COURS = false;
+let _syncEnCoursPromise = null; // permet à un clic manuel d'attendre le cycle en cours au lieu d'abandonner
 async function synchroniserAnneeActive(){
-  if(TEKOULO_SYNC_EN_COURS) return {nouveau:false, echec:false, ignore:true};
+  if(TEKOULO_SYNC_EN_COURS) return _syncEnCoursPromise || {nouveau:false, echec:false, ignore:true};
   TEKOULO_SYNC_EN_COURS = true;
   const filetSecurite = setTimeout(()=>{ TEKOULO_SYNC_EN_COURS = false; }, 45000);
+  _syncEnCoursPromise = (async()=>{
   try{
     const year = getActiveYear();
     let nouveau = false;
@@ -1801,6 +1803,8 @@ async function synchroniserAnneeActive(){
     clearTimeout(filetSecurite);
     TEKOULO_SYNC_EN_COURS = false;
   }
+  })();
+  return _syncEnCoursPromise;
 }
 function demarrerSynchronisationAutomatique(){
   synchroniserAnneeActive();
