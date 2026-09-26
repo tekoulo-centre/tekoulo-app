@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Collège Tekoulo Centre — Base de Données de Gestion</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<meta name="theme-color" content="#7a1f1f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tekoulo Centre">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,500&family=Playfair+Display:wght@600;700;900&display=swap" rel="stylesheet">
 <style>
@@ -1249,6 +1256,7 @@
         <button class="btn ghost sm" onclick="exportAllData()">⭳ Sauvegarder</button>
         <button class="btn ghost sm" onclick="document.getElementById('import-file').click()">⭱ Restaurer</button>
         <input type="file" id="import-file" accept="application/json" style="display:none" onchange="importAllData(event)">
+        <button class="btn ghost sm" id="pwa-install-btn" onclick="pwaInstaller()" style="display:none;" title="Ajouter une icône de l'application sur cet appareil">📲 Installer l'application</button>
         <button id="assistant-bulle" onclick="ouvrirFermerAssistant()" title="Assistant IA" style="width:36px; height:36px; border-radius:50%; background:var(--grad-forest,linear-gradient(135deg,#0F6B45,#0B4A32)); color:#fff; border:none; font-size:17px; box-shadow:0 4px 12px rgba(11,74,50,.45); cursor:pointer; z-index:1500; flex-shrink:0; transform:translateY(-1px);">💬</button>
         <button class="btn danger sm" onclick="doLogout()">Quitter</button>
       </div>
@@ -1294,6 +1302,7 @@
         et apparaissent, dans l'ordre du fichier, comme suit — chercher le
         titre exact avec Ctrl+F pour sauter directement à la section :
 
+          INSTALLATION PWA (icône sur l'écran d'accueil)
           STORAGE (avec gestion multi-années scolaires)
           HORODATAGE PAR FICHE (v142 — audit 1.2)
           PONT SERVEUR CENTRAL (étape 6)
@@ -1355,6 +1364,78 @@
    été fait ici pour ne pas modifier son mode de distribution actuel.
    --------------------------------------------------------------------- */
 window.__TEKOULO_READY__ = true;
+
+/* ============================ INSTALLATION PWA (icône sur l'écran d'accueil) ============================ */
+/* Bouton « 📲 Installer l'application » dans la barre du haut : déclenche l'invite native d'installation
+   sur Chrome/Edge (Android comme ordinateur), via l'évènement beforeinstallprompt. Sur iPhone/iPad
+   (Safari), cet évènement n'existe pas — le bouton affiche alors les 2 étapes manuelles (Partager →
+   Sur l'écran d'accueil). Le bouton reste caché si l'application est déjà installée, et sur les
+   navigateurs qui ne proposent aucune des deux voies (ex. Firefox, Safari sur ordinateur). */
+let PWA_INSTALL_PROMPT = null;
+function pwaEstDejaInstallee(){
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
+}
+function pwaEstIOS(){
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+}
+window.addEventListener('beforeinstallprompt', (e)=>{
+  e.preventDefault();
+  PWA_INSTALL_PROMPT = e;
+  const btn = document.getElementById('pwa-install-btn');
+  if(btn && !pwaEstDejaInstallee()) btn.style.display = '';
+});
+window.addEventListener('appinstalled', ()=>{
+  PWA_INSTALL_PROMPT = null;
+  const btn = document.getElementById('pwa-install-btn');
+  if(btn) btn.style.display = 'none';
+  toast("Application installée — retrouvez son icône sur l'écran d'accueil.");
+});
+async function pwaInstaller(){
+  if(PWA_INSTALL_PROMPT){
+    PWA_INSTALL_PROMPT.prompt();
+    const choix = await PWA_INSTALL_PROMPT.userChoice;
+    PWA_INSTALL_PROMPT = null;
+    if(choix && choix.outcome==='accepted'){
+      const btn = document.getElementById('pwa-install-btn');
+      if(btn) btn.style.display = 'none';
+    }
+    return;
+  }
+  pwaAfficherInstructionsManuelles();
+}
+function pwaAfficherInstructionsManuelles(){
+  const ios = pwaEstIOS();
+  const corps = ios
+    ? `<ol style="margin:10px 0 0; padding-left:20px; line-height:1.7;">
+         <li>Ouvrez ce lien dans <b>Safari</b> (pas Chrome — obligatoire sur iPhone/iPad).</li>
+         <li>Appuyez sur l'icône <b>Partager</b> (carré avec une flèche) en bas de l'écran.</li>
+         <li>Choisissez <b>« Sur l'écran d'accueil »</b>, puis <b>Ajouter</b>.</li>
+       </ol>`
+    : `<ol style="margin:10px 0 0; padding-left:20px; line-height:1.7;">
+         <li>Ouvrez le menu de votre navigateur (⋮ ou ≡, en haut à droite).</li>
+         <li>Choisissez <b>« Installer l'application »</b> (ou « Ajouter à l'écran d'accueil »).</li>
+         <li>Une icône de l'application apparaît sur votre écran d'accueil ou votre bureau, et s'ouvre ensuite dans sa propre fenêtre, sans barre d'adresse.</li>
+       </ol>`;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:5000; display:flex; align-items:center; justify-content:center; padding:20px;';
+  overlay.innerHTML = `<div style="background:#fff; border-radius:12px; padding:22px; max-width:420px; width:100%; box-shadow:0 12px 40px rgba(0,0,0,.3);">
+      <h3 style="margin:0 0 4px;">📲 Installer l'application</h3>
+      <div style="font-size:13px; color:var(--ink-soft,#666);">${corps}</div>
+      <div style="margin-top:16px; text-align:right;"><button type="button" class="btn sm" id="pwa-instructions-fermer">Fermer</button></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const fermer = ()=> overlay.remove();
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) fermer(); });
+  overlay.querySelector('#pwa-instructions-fermer').addEventListener('click', fermer);
+}
+document.addEventListener('DOMContentLoaded', ()=>{
+  const btn = document.getElementById('pwa-install-btn');
+  if(!btn) return;
+  if(pwaEstDejaInstallee()){ btn.style.display='none'; return; }
+  if(pwaEstIOS()){ btn.style.display=''; } // iOS : toujours proposer les instructions manuelles, faute d'invite native
+  // Autres navigateurs : le bouton reste caché tant que « beforeinstallprompt » ne s'est pas déclenché
+  // (et certains, comme Firefox ou Safari sur ordinateur, ne le déclenchent jamais).
+});
 
 /* ============================ STORAGE (avec gestion multi-années scolaires) ============================ */
 const DB_PREFIX = 'tekoulo_';
@@ -1808,7 +1889,7 @@ async function synchroniserAnneeActive(){
 }
 function demarrerSynchronisationAutomatique(){
   synchroniserAnneeActive();
-  setInterval(synchroniserAnneeActive, 20000);
+  setInterval(synchroniserAnneeActive, 120000); // toutes les 2 minutes (au lieu de 20 s), pour laisser la main aux clics manuels
   window.addEventListener('online', synchroniserAnneeActive);
   verifierMiseAJourApp(true);
   setInterval(()=>verifierMiseAJourApp(true), 15*60*1000); // revérifie toutes les 15 minutes
@@ -4409,11 +4490,21 @@ function renderGuide(container){
 
       <h3>10 bis.5 Synchronisation automatique et manuelle</h3>
       <ul>
-        <li><b>Automatique :</b> une fois Google Drive connecté, les données se synchronisent en arrière-plan à intervalles réguliers.</li>
-        <li><b>Manuelle :</b> le bouton « 🔄 Synchroniser » du tableau de bord force une vérification immédiate — il affiche « ✅ Réussi » avec l'heure, ou un message d'échec expliquant la cause (voir 10 bis.10).</li>
+        <li><b>Automatique :</b> une fois Google Drive connecté, les données se synchronisent seules en arrière-plan, environ toutes les <b>2 minutes</b>, sans aucune action à faire.</li>
+        <li><b>Manuelle :</b> le bouton « 🔄 Synchroniser » du tableau de bord force une vérification immédiate — il affiche « ✅ Réussi » avec l'heure, ou un message d'échec expliquant la cause (voir 10 bis.10). Si un cycle automatique est déjà en train de tourner au moment du clic, le bouton attend simplement qu'il se termine puis affiche son résultat — inutile de cliquer plusieurs fois.</li>
         <li><b>Hors connexion :</b> les modifications restent en attente et repartent automatiquement dès que la connexion à Google Drive est rétablie.</li>
       </ul>
       <p>Chaque « collection » de données (élèves, notes, personnel, frais, etc.) est enregistrée comme un fichier JSON séparé dans le dossier Drive partagé. En cas de modification simultanée de la même fiche par deux personnes sur deux appareils différents, la version la plus récente est automatiquement conservée, sans demande de confirmation manuelle pour l'instant.</p>
+
+      <h3>10 bis.5 bis Plusieurs personnes connectées en même temps</h3>
+      <p>Il n'y a pas de limite au nombre de personnes pouvant être connectées en même temps, chacune sur son propre appareil (téléphone, ordinateur…), avec son propre compte Google autorisé (voir 10 bis.8). Concrètement :</p>
+      <ul>
+        <li>Chaque personne saisit ses données normalement sur son appareil ; rien ne bloque ni n'attend les autres pendant la saisie.</li>
+        <li>Les données saisies par une personne sont envoyées vers le dossier Drive partagé quelques instants après la saisie, puis redescendent vers les appareils des autres personnes lors de leur prochaine synchronisation (automatique toutes les 2 minutes, ou manuelle via « 🔄 Synchroniser »).</li>
+        <li>Il y a donc toujours un léger délai (de quelques secondes à environ 2 minutes) avant qu'une donnée saisie par une personne n'apparaisse chez les autres — ce n'est pas instantané comme un tableur partagé en ligne.</li>
+        <li>Si deux personnes modifient la <b>même fiche</b> (le même élève, par exemple) à quelques instants d'intervalle sans avoir vu la modification de l'autre, c'est la version enregistrée en dernier sur Drive qui est conservée ; l'autre modification est silencieusement remplacée. Pour l'éviter, mieux vaut répartir les tâches (par exemple : une personne pour les inscriptions, une autre pour les notes) plutôt que de faire modifier la même fiche par plusieurs personnes au même moment.</li>
+        <li>Après une saisie importante, il est recommandé d'appuyer sur « 🔄 Synchroniser » avant de fermer l'application, pour s'assurer que la donnée est bien partie vers Drive et ne reste pas seulement « en attente » sur l'appareil.</li>
+      </ul>
 
       <h3>10 bis.6 Sécurité et bonnes pratiques</h3>
       <ul>
@@ -4425,19 +4516,25 @@ function renderGuide(container){
       <h3>10 bis.7 Les rôles disponibles</h3>
       <p>Les rôles et les modules accessibles à chacun (Fondateur, Directeur, Principal, Proviseur, Comptable, Enseignant, etc.) sont décrits au chapitre 10.7 — la connexion à Google Drive n'a pas d'effet sur ces droits : elle ne fait que synchroniser les données déjà autorisées pour le rôle de la personne connectée.</p>
 
-      <h3>10 bis.8 Donner l'accès à une nouvelle personne</h3>
-      <p>Ces deux étapes sont réservées au Fondateur (ou à la personne technique en charge du compte Google de l'école) :</p>
+      <h3>10 bis.8 Ajouter un nouvel utilisateur (donner l'accès à une nouvelle personne)</h3>
+      <p>Pour qu'une nouvelle personne (un nouveau comptable, un nouveau directeur de cycle, etc.) puisse à la fois se connecter à l'application <b>et</b> synchroniser ses données avec les autres, deux choses distinctes sont à mettre en place :</p>
+      <p><b>A) Un compte de connexion à l'application</b> (identifiant + mot de passe, restreint aux modules de son rôle) : le Fondateur ou le Chef d'établissement le crée dans <b>Paramètres → Sécurité & comptes</b> (chapitre 10.7). Cette étape suffit pour que la personne se connecte et travaille, mais <b>ne suffit pas</b> à elle seule pour partager ses données avec les autres appareils.</p>
+      <p><b>B) L'accès à la synchronisation Google Drive</b> — réservé au Fondateur ou à la personne technique en charge du compte Google de l'école :</p>
       <ol>
-        <li><b>Autoriser son compte Google</b> : dans Google Cloud (<code>console.cloud.google.com/auth/audience</code>), section « Utilisateurs test », ajouter l'adresse Gmail de la personne.</li>
-        <li><b>Partager le dossier Drive</b> : ouvrir le dossier de données de l'école dans Google Drive, « Partager », ajouter la même adresse Gmail avec le rôle <b>« Éditeur »</b>.</li>
+        <li><b>Demander à la personne son adresse Gmail</b> (celle avec laquelle elle utilisera l'application au quotidien).</li>
+        <li><b>Autoriser son compte Google</b> : ouvrir <code>console.cloud.google.com/auth/audience</code> (avec le compte Google qui a créé le projet de l'école), section <b>« Utilisateurs test »</b>, bouton <b>« Add users »</b>, saisir l'adresse Gmail de la personne, puis <b>Enregistrer</b>.</li>
+        <li><b>Partager le dossier Drive</b> : ouvrir le dossier de données de l'école dans Google Drive, appuyer sur <b>« Partager »</b>, ajouter la même adresse Gmail avec le rôle <b>« Éditeur »</b>.</li>
       </ol>
-      <p>La personne peut ensuite se connecter à l'application avec son identifiant habituel, puis appuyer sur « 🔗 Connecter Google Drive » et choisir son propre compte Google.</p>
+      <p>Une fois ces deux étapes faites, la personne peut : se connecter à l'application avec son identifiant habituel (étape A), puis, sur le tableau de bord, appuyer sur <b>« 🔗 Connecter Google Drive »</b> et choisir son propre compte Google (celui ajouté à l'étape B) dans la fenêtre qui s'ouvre.</p>
+      <div class="guide-callout astuce"><b class="gc-label">💡 Astuce</b>Avant d'appuyer sur « Connecter Google Drive », il est conseillé de fermer les autres onglets ouverts dans le navigateur et de ne pas changer d'application pendant la connexion : sur téléphone, la fenêtre Google se ferme parfois toute seule si l'appareil manque de mémoire, ce qui affiche une erreur de type « fenêtre fermée » — il suffit alors de fermer les onglets superflus et de réessayer.</div>
+      <div class="guide-callout info"><b class="gc-label">ℹ️ Un compte Google par personne</b>Chaque personne (Directeur, Principal, Proviseur, Comptable…) se connecte avec son propre compte Google, préalablement autorisé par le Fondateur. Ce compte Google ne remplace pas l'identifiant/mot de passe habituel de l'application (chapitre 10.7) : les deux sont indépendants et servent chacun à leur usage — le compte de l'application pour restreindre l'accès aux modules, le compte Google uniquement pour la synchronisation des données.</div>
 
       <h3>10 bis.9 Questions fréquentes</h3>
       <p><b>Le compte Google est-il le même que l'identifiant de connexion à l'application (chapitre 10.7) ?</b> Non, ce sont deux systèmes distincts et indépendants.</p>
-      <p><b>Le bouton « 🔄 Synchroniser » affiche un message d'échec, que faire ?</b> Vérifier la connexion internet de l'appareil, puis réessayer dans une à deux minutes. Si le message indique une session expirée, appuyer de nouveau sur le bouton pour se reconnecter à Google Drive.</p>
-      <p><b>Le dossier Drive reste vide après connexion, que faire ?</b> Vérifier que le compte Google utilisé dans l'application est bien celui à qui le dossier a été partagé (et non un autre compte Google connecté sur le même appareil/navigateur) — voir « Partagés avec moi » dans Google Drive pour confirmer.</p>
+      <p><b>Le bouton « 🔄 Synchroniser » affiche un message d'échec, que faire ?</b> Vérifier la connexion internet de l'appareil, puis réessayer dans une à deux minutes. Si le message indique une session expirée, appuyer de nouveau sur le bouton pour se reconnecter à Google Drive. Le message d'échec affiche aussi une ligne « Détail » avec le code technique exact — utile à transmettre à la personne technique si le problème persiste.</p>
+      <p><b>Le dossier Drive reste vide après connexion, que faire ?</b> Vérifier que le compte Google utilisé dans l'application est bien celui à qui le dossier a été partagé (et non un autre compte Google connecté sur le même appareil/navigateur) — voir « Partagés avec moi » dans Google Drive pour confirmer. Il est aussi normal que le dossier reste vide tant qu'aucune donnée n'a encore été saisie ou modifiée depuis la connexion : les fichiers n'apparaissent qu'après une première saisie suivie d'une synchronisation.</p>
       <p><b>Puis-je changer le compte Google de l'école ?</b> Oui, mais cela demande de recréer les autorisations (utilisateurs test, partage du dossier) avec le nouveau compte — à faire uniquement avec l'aide de la personne technique.</p>
+      <p><b>Deux personnes peuvent-elles travailler en même temps sans problème ?</b> Oui, voir 10 bis.5 bis : chacune travaille sur son appareil, les données se recroisent automatiquement au fil des synchronisations, avec un léger délai.</p>
 
       <h3>10 bis.10 Limites actuelles, honnêtes</h3>
       <ul>
@@ -4451,6 +4548,7 @@ function renderGuide(container){
       <ul>
         <li><b>Page blanche à l'ouverture</b> → vérifier la connexion internet et la batterie de l'appareil ; recharger la page en navigation privée pour écarter tout souci de cache.</li>
         <li><b>« Accès bloqué : erreur d'autorisation » lors de la connexion Google</b> → le compte Google utilisé n'a pas encore été ajouté comme utilisateur test (10 bis.8), ou le champ d'application Drive n'a pas été correctement configuré côté Google Cloud — contacter la personne technique.</li>
+        <li><b>Fenêtre Google qui se ferme toute seule (« popup fermée »)</b> → fermer les autres onglets du navigateur et ne pas changer d'application pendant la connexion, puis réessayer (10 bis.8).</li>
         <li><b>Dossier Drive vide après synchronisation</b> → vérifier qu'on est connecté, dans l'application comme dans Drive, avec le même compte Google (10 bis.9).</li>
         <li>Toujours garder une sauvegarde exportée (chapitre 9) en plus de Google Drive.</li>
       </ul>
