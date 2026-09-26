@@ -1436,6 +1436,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
   // Autres navigateurs : le bouton reste caché tant que « beforeinstallprompt » ne s'est pas déclenché
   // (et certains, comme Firefox ou Safari sur ordinateur, ne le déclenchent jamais).
 });
+/* Un service worker enregistré (avec un gestionnaire « fetch ») fait partie des conditions
+   d'installabilité vérifiées par Chrome/Edge avant de proposer l'installation — voir sw.js. */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+}
 
 /* ============================ STORAGE (avec gestion multi-années scolaires) ============================ */
 const DB_PREFIX = 'tekoulo_';
