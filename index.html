@@ -3470,52 +3470,13 @@ async function doLogin(){
 }
 async function doLoginCore(){
   const pass = document.getElementById('login-pass').value;
-
-  // Étape 6 : ancienne authentification sur serveur central — DÉSACTIVÉE.
-  // Le serveur Render d'origine n'existe plus ; TEKOULO_API_URL pointe désormais vers le Cloudflare
-  // Worker de l'assistant IA uniquement (voir sa définition ci-dessus), qui n'implémente pas
-  // /api/auth/login. L'appeler ici renvoyait un rôle non reconnu et limitait l'accès au seul
-  // Tableau de bord (+ Guide + Biographie) pour tout le monde, y compris le Fondateur. La connexion
-  // passe maintenant uniquement par le mode local ci-dessous (comptes de rôle + mot de passe
-  // administrateur), qui gère déjà tous les cas correctement.
-  if(false){
-    // Étape 6 : si le serveur central est configuré, on authentifie dessus en priorité (P0-04).
-  if(TEKOULO_API_URL){
-    // Délai maximal de 20 s (serveur gratuit qui se réveille) + message si l'attente se prolonge
-    const ctrlL = new AbortController();
-    const tmL = setTimeout(()=>ctrlL.abort(), 20000);
-    const tmMsg = setTimeout(()=>toast('Le serveur met du temps à répondre… patientez (20 s maximum), sinon la connexion locale sera essayée.'), 3000);
-    try{
-      const res = await fetch(TEKOULO_API_URL+'/api/auth/login', {
-        signal: ctrlL.signal, method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ nom_utilisateur: (document.getElementById('login-user').value||'direction').toLowerCase(), mot_de_passe: pass })
-      });
-      clearTimeout(tmL); clearTimeout(tmMsg);
-      if(res.ok){
-        const data = await res.json();
-        if(!cycleAutorise(compteLocalPourIdentifiant(document.getElementById('login-user').value))){ refuserCycle(); return; }
-        TEKOULO_TOKEN = data.token;
-        sessionStorage.setItem('tekoulo_token', data.token);
-        sessionStorage.setItem('tekoulo_role', data.role || 'inconnu');
-        if(!data.role || !ROLE_MODULES[data.role]) toast('Rôle « '+(data.role||'non fourni par le serveur')+' » non reconnu : accès limité au tableau de bord et au guide.', true);
-        document.getElementById('login-screen').style.display='none';
-        sessionStorage.setItem('tekoulo_session','1');
-        ouvrirEspaceApresConnexion();
-        demarrerSynchronisationAutomatique();
-        return;
-      }
-      // Identifiant inconnu du serveur (401/404) ou serveur momentanément indisponible : on continue
-      // ci-dessous avec les comptes de rôle locaux et le mot de passe administrateur, sans bloquer l'accès.
-    }catch(e){
-      clearTimeout(tmL); clearTimeout(tmMsg);
-      // Pas de réseau ou serveur injoignable (ou délai dépassé) : on continue avec le mode local ci-dessous.
-    }
-  }
-  } // fin du bloc désactivé (ancienne authentification serveur)
-
-  // Mode local de secours (identique au comportement d'origine, complété par les comptes de rôle) :
-  // reste actif tant que le backend n'est pas déployé, ou en cas de coupure réseau au moment de la connexion.
   const userField = (document.getElementById('login-user').value||'').trim();
+
+  // Le rôle est TOUJOURS déterminé localement (comptes de rôle + mot de passe administrateur) :
+  // l'ancien serveur Render qui pouvait faire autorité sur le rôle n'existe plus. TEKOULO_API_URL
+  // pointe aujourd'hui vers le Cloudflare Worker de l'assistant IA (voir sa définition ci-dessus) :
+  // on l'appelle uniquement pour obtenir, en arrière-plan, le jeton nécessaire à l'assistant —
+  // jamais pour décider qui a accès à quoi (voir recupererTokenAssistant ci-dessous).
 
   // 1) Compte de rôle créé depuis Paramètres (Chef d'établissement, Directeur des études, Comptable,
   //    Chargé à l'orientation, Enseignant) : identifiant + mot de passe propres à la personne.
@@ -3526,6 +3487,7 @@ async function doLoginCore(){
     document.getElementById('login-screen').style.display='none';
     sessionStorage.setItem('tekoulo_session','1');
     ouvrirEspaceApresConnexion();
+    recupererTokenAssistant(userField, pass);
     return;
   }
 
@@ -3535,10 +3497,38 @@ async function doLoginCore(){
     document.getElementById('login-screen').style.display='none';
     sessionStorage.setItem('tekoulo_session','1');
     ouvrirEspaceApresConnexion();
+    recupererTokenAssistant(userField, pass);
     if(mdpAdminParDefaut()) demanderChangementMdpDefaut();
   } else {
     loginNoterEchec();
     toast('Identifiant ou mot de passe incorrect.', true);
+  }
+}
+/* Récupère, en arrière-plan et sans jamais bloquer ni modifier la connexion déjà établie
+   localement, le jeton (token) utilisé par l'assistant IA (Cloudflare Worker). Un échec ici
+   (serveur endormi, hors-ligne, identifiants non reconnus du Worker...) laisse simplement
+   l'assistant indisponible pour cette session — cela n'affecte jamais les modules visibles
+   ni le rôle, qui restent décidés uniquement par doLoginCore ci-dessus. */
+async function recupererTokenAssistant(identifiant, pass){
+  if(!TEKOULO_API_URL) return;
+  const ctrl = new AbortController();
+  const tm = setTimeout(()=>ctrl.abort(), 15000);
+  try{
+    const res = await fetch(TEKOULO_API_URL+'/api/auth/login', {
+      signal: ctrl.signal, method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ nom_utilisateur: (identifiant||'direction').toLowerCase(), mot_de_passe: pass })
+    });
+    clearTimeout(tm);
+    if(res.ok){
+      const data = await res.json();
+      if(data && data.token){
+        TEKOULO_TOKEN = data.token;
+        sessionStorage.setItem('tekoulo_token', data.token);
+      }
+    }
+  }catch(e){
+    clearTimeout(tm);
+    // Pas grave : l'assistant IA restera simplement indisponible pour cette session.
   }
 }
 /* ---------- Choix de l'espace (cycle) PUIS connexion propre à ce cycle ---------- */
