@@ -3471,7 +3471,15 @@ async function doLogin(){
 async function doLoginCore(){
   const pass = document.getElementById('login-pass').value;
 
-  // Étape 6 : si le serveur central est configuré, on authentifie dessus en priorité (P0-04).
+  // Étape 6 : ancienne authentification sur serveur central — DÉSACTIVÉE.
+  // Le serveur Render d'origine n'existe plus ; TEKOULO_API_URL pointe désormais vers le Cloudflare
+  // Worker de l'assistant IA uniquement (voir sa définition ci-dessus), qui n'implémente pas
+  // /api/auth/login. L'appeler ici renvoyait un rôle non reconnu et limitait l'accès au seul
+  // Tableau de bord (+ Guide + Biographie) pour tout le monde, y compris le Fondateur. La connexion
+  // passe maintenant uniquement par le mode local ci-dessous (comptes de rôle + mot de passe
+  // administrateur), qui gère déjà tous les cas correctement.
+  if(false){
+    // Étape 6 : si le serveur central est configuré, on authentifie dessus en priorité (P0-04).
   if(TEKOULO_API_URL){
     // Délai maximal de 20 s (serveur gratuit qui se réveille) + message si l'attente se prolonge
     const ctrlL = new AbortController();
@@ -3503,6 +3511,7 @@ async function doLoginCore(){
       // Pas de réseau ou serveur injoignable (ou délai dépassé) : on continue avec le mode local ci-dessous.
     }
   }
+  } // fin du bloc désactivé (ancienne authentification serveur)
 
   // Mode local de secours (identique au comportement d'origine, complété par les comptes de rôle) :
   // reste actif tant que le backend n'est pas déployé, ou en cas de coupure réseau au moment de la connexion.
