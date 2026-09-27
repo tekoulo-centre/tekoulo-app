@@ -770,6 +770,18 @@
   table tbody tr:nth-child(even){background:#FCFAF3;}
   table tbody tr:hover{background:#FBF0D2;}
   table tbody tr:last-child td{border-bottom:1px solid #EBE6D8;}
+  /* Colonnes figées (identification) : N°/Rang, Identifiant/Matricule, Prénom, Nom, Sexe — appliquées
+     automatiquement par figerRecalculerPositions() (voir script) à tout tableau qui possède au moins
+     deux de ces colonnes, pour qu'elles restent visibles pendant le défilement horizontal. */
+  td.col-frozen, th.col-frozen{ position:sticky; z-index:3; }
+  table thead th.col-frozen{ z-index:6; }
+  table tbody td.col-frozen{ background:#FFFFFF; }
+  table tbody tr:nth-child(even) td.col-frozen{ background:#FCFAF3; }
+  table tbody tr:hover td.col-frozen{ background:#FBF0D2; }
+  td.col-frozen-last, th.col-frozen-last{ box-shadow:3px 0 6px -2px rgba(20,30,20,.28); }
+  @media print{
+    td.col-frozen, th.col-frozen{ position:static !important; left:auto !important; box-shadow:none !important; }
+  }
   @keyframes rowFlash{
     0%{background:var(--grad-gold);}
     100%{background:transparent;}
@@ -1537,7 +1549,7 @@ if('serviceWorker' in navigator){
 /* ============================ STORAGE (avec gestion multi-années scolaires) ============================ */
 const DB_PREFIX = 'tekoulo_';
 /* Clés qui restent communes à toutes les années scolaires (identité de l'école, mot de passe, liste des années) */
-const YEAR_EXEMPT_KEYS = ['parametres', 'password', 'years', 'comptesLocaux'];
+const YEAR_EXEMPT_KEYS = ['parametres', 'password', 'passwordTechnique', 'years', 'comptesLocaux'];
 
 function getYearsData(){
   try{
@@ -3261,6 +3273,102 @@ function verifierMdpAdmin(pass){
   if(!saved.startsWith('h1$')){ try{ localStorage.setItem(DB_PREFIX+'password', tekouloHashMdp(pass)); }catch(e){} }
   return true;
 }
+/* ---- Mot de passe dédié au Module technique (chapitre « Technique & Dépannage ») ----
+   Indépendant du mot de passe administrateur, mais celui-ci reste toujours accepté en secours
+   (Fondateur) en cas d'oubli du mot de passe technique. Clé hors année scolaire (YEAR_EXEMPT_KEYS). */
+const MDP_TECHNIQUE_MIN_LONGUEUR = 6;
+function mdpTechniqueDefini(){ return !!localStorage.getItem(DB_PREFIX+'passwordTechnique'); }
+function verifierMdpTechnique(pass){
+  if(!pass) return false;
+  if(verifierMdpAdmin(pass)) return true; // le mot de passe administrateur ouvre aussi ce module
+  const saved = localStorage.getItem(DB_PREFIX+'passwordTechnique');
+  if(!saved) return false;
+  return tekouloVerifierMdp(pass, saved);
+}
+function definirMdpTechnique(pass){
+  try{ localStorage.setItem(DB_PREFIX+'passwordTechnique', tekouloHashMdp(pass)); return true; }
+  catch(e){ return false; }
+}
+function techniqueEstDeverrouille(){ try{ return sessionStorage.getItem('tekoulo_technique_ok')==='1'; }catch(e){ return false; } }
+function techniqueVerrouiller(){
+  try{ sessionStorage.removeItem('tekoulo_technique_ok'); }catch(e){}
+  techniqueAfficherEcran();
+}
+function techniqueValiderAcces(){
+  const champ = document.getElementById('technique-mdp-saisie');
+  const err = document.getElementById('technique-mdp-erreur');
+  const pass = champ ? champ.value : '';
+  if(!verifierMdpTechnique(pass)){ if(err) err.textContent = 'Mot de passe incorrect.'; return; }
+  try{ sessionStorage.setItem('tekoulo_technique_ok', '1'); }catch(e){}
+  techniqueAfficherEcran();
+}
+function techniqueValiderCreation(){
+  const p1 = document.getElementById('technique-mdp-nouveau-1').value;
+  const p2 = document.getElementById('technique-mdp-nouveau-2').value;
+  const err = document.getElementById('technique-mdp-erreur');
+  if(!p1 || p1.length<MDP_TECHNIQUE_MIN_LONGUEUR){ err.textContent = 'Le mot de passe doit contenir au moins '+MDP_TECHNIQUE_MIN_LONGUEUR+' caractères.'; return; }
+  if(p1!==p2){ err.textContent = 'Les deux mots de passe ne correspondent pas.'; return; }
+  definirMdpTechnique(p1);
+  try{ sessionStorage.setItem('tekoulo_technique_ok', '1'); }catch(e){}
+  toast('Mot de passe du module technique enregistré.');
+  techniqueAfficherEcran();
+}
+function techniqueChangerMdp(){
+  const cur = document.getElementById('technique-mdp-actuel').value;
+  const p1 = document.getElementById('technique-mdp-neuf-1').value;
+  const p2 = document.getElementById('technique-mdp-neuf-2').value;
+  const msg = document.getElementById('technique-mdp-change-msg');
+  if(!verifierMdpTechnique(cur)){ msg.style.color='var(--red)'; msg.textContent = 'Mot de passe actuel incorrect.'; return; }
+  if(!p1 || p1.length<MDP_TECHNIQUE_MIN_LONGUEUR){ msg.style.color='var(--red)'; msg.textContent = 'Le nouveau mot de passe doit contenir au moins '+MDP_TECHNIQUE_MIN_LONGUEUR+' caractères.'; return; }
+  if(p1!==p2){ msg.style.color='var(--red)'; msg.textContent = 'Les deux mots de passe ne correspondent pas.'; return; }
+  definirMdpTechnique(p1);
+  msg.style.color='var(--green-deep)'; msg.textContent = 'Mot de passe technique modifié.';
+  document.getElementById('technique-mdp-actuel').value='';
+  document.getElementById('technique-mdp-neuf-1').value='';
+  document.getElementById('technique-mdp-neuf-2').value='';
+}
+function techniqueAfficherEcran(){
+  const zone = document.getElementById('technique-zone');
+  if(!zone) return;
+  if(techniqueEstDeverrouille()){
+    zone.innerHTML = `
+      <div class="hint-box" style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <span>🔓 Module technique déverrouillé pour cette session.</span>
+        <button type="button" class="btn ghost sm" onclick="techniqueVerrouiller()">🔒 Verrouiller</button>
+      </div>
+      ${techniqueContenuHTML()}
+      <div class="section-title"><h3><span class="bar"></span>Changer le mot de passe du module technique</h3></div>
+      <div class="card pad" style="max-width:420px;">
+        <div class="field" style="margin-bottom:8px;"><label>Mot de passe actuel</label><input id="technique-mdp-actuel" type="password" autocomplete="off"></div>
+        <div class="field" style="margin-bottom:8px;"><label>Nouveau mot de passe</label><input id="technique-mdp-neuf-1" type="password" autocomplete="off"></div>
+        <div class="field" style="margin-bottom:8px;"><label>Confirmer</label><input id="technique-mdp-neuf-2" type="password" autocomplete="off"></div>
+        <button type="button" class="btn" onclick="techniqueChangerMdp()">Changer le mot de passe</button>
+        <p id="technique-mdp-change-msg" style="font-size:12.5px; margin:8px 0 0;"></p>
+      </div>`;
+  } else if(!mdpTechniqueDefini()){
+    zone.innerHTML = `
+      <div class="guide-callout info" style="max-width:460px;">
+        <b class="gc-label">🔒 Module protégé</b>
+        Cette section contient des informations sensibles (dépannage, comptes, liens techniques). Définissez un mot de passe pour la protéger — le mot de passe administrateur permettra toujours d'y accéder en secours.
+      </div>
+      <div class="card pad" style="max-width:380px;">
+        <div class="field" style="margin-bottom:8px;"><label>Nouveau mot de passe</label><input id="technique-mdp-nouveau-1" type="password" autocomplete="off" placeholder="${MDP_TECHNIQUE_MIN_LONGUEUR} caractères minimum"></div>
+        <div class="field" style="margin-bottom:8px;"><label>Confirmer</label><input id="technique-mdp-nouveau-2" type="password" autocomplete="off"></div>
+        <button type="button" class="btn" onclick="techniqueValiderCreation()">Définir le mot de passe et continuer</button>
+        <p id="technique-mdp-erreur" style="font-size:12.5px; color:var(--red); margin:8px 0 0;"></p>
+      </div>`;
+  } else {
+    zone.innerHTML = `
+      <div class="guide-callout attention" style="max-width:420px;">
+        <b class="gc-label">🔒 Accès protégé</b>Ce module est protégé par un mot de passe.
+      </div>
+      <div class="card pad" style="max-width:340px;">
+        <div class="field" style="margin-bottom:8px;"><label>Mot de passe</label><input id="technique-mdp-saisie" type="password" autocomplete="off" onkeydown="if(event.key==='Enter') techniqueValiderAcces();"></div>
+        <button type="button" class="btn" onclick="techniqueValiderAcces()">Déverrouiller</button>
+        <p id="technique-mdp-erreur" style="font-size:12.5px; color:var(--red); margin:8px 0 0;"></p>
+      </div>`;
+  }
+}
 function migrerMotsDePasseComptes(){
   const liste = dbGet('comptesLocaux', []); let modifie = false;
   liste.forEach(c=>{
@@ -3373,19 +3481,26 @@ async function doLoginCore(){
       clearTimeout(tmL); clearTimeout(tmMsg);
       if(res.ok){
         const data = await res.json();
-        if(!cycleAutorise(compteLocalPourIdentifiant(document.getElementById('login-user').value))){ refuserCycle(); return; }
-        TEKOULO_TOKEN = data.token;
-        sessionStorage.setItem('tekoulo_token', data.token);
-        sessionStorage.setItem('tekoulo_role', data.role || 'inconnu');
-        if(!data.role || !ROLE_MODULES[data.role]) toast('Rôle « '+(data.role||'non fourni par le serveur')+' » non reconnu : accès limité au tableau de bord et au guide.', true);
-        document.getElementById('login-screen').style.display='none';
-        sessionStorage.setItem('tekoulo_session','1');
-        ouvrirEspaceApresConnexion();
-        demarrerSynchronisationAutomatique();
-        return;
+        // Le serveur central (Cloudflare Worker) ne sert aujourd'hui que l'assistant IA et ne fournit
+        // pas systématiquement de rôle applicatif valide. On n'utilise cette branche que si un rôle
+        // reconnu (présent dans ROLE_MODULES) est effectivement renvoyé ; sinon on continue plus bas
+        // avec les comptes locaux / le mot de passe administrateur, au lieu d'accorder un accès
+        // minimal permanent avec le rôle "inconnu" (bug corrigé : voir historique).
+        if(data.role && ROLE_MODULES[data.role]){
+          if(!cycleAutorise(compteLocalPourIdentifiant(document.getElementById('login-user').value))){ refuserCycle(); return; }
+          TEKOULO_TOKEN = data.token;
+          sessionStorage.setItem('tekoulo_token', data.token);
+          sessionStorage.setItem('tekoulo_role', data.role);
+          document.getElementById('login-screen').style.display='none';
+          sessionStorage.setItem('tekoulo_session','1');
+          ouvrirEspaceApresConnexion();
+          demarrerSynchronisationAutomatique();
+          return;
+        }
       }
-      // Identifiant inconnu du serveur (401/404) ou serveur momentanément indisponible : on continue
-      // ci-dessous avec les comptes de rôle locaux et le mot de passe administrateur, sans bloquer l'accès.
+      // Identifiant inconnu du serveur (401/404), serveur momentanément indisponible, ou serveur
+      // sans rôle applicatif valide (cas du Worker assistant IA) : on continue ci-dessous avec
+      // les comptes de rôle locaux et le mot de passe administrateur, sans bloquer l'accès.
     }catch(e){
       clearTimeout(tmL); clearTimeout(tmMsg);
       // Pas de réseau ou serveur injoignable (ou délai dépassé) : on continue avec le mode local ci-dessous.
@@ -4731,7 +4846,7 @@ function renderGuide(container){
         <li>Tant que l'application reste en phase de test Google (moins de 100 utilisateurs), chaque personne doit être ajoutée manuellement comme « utilisateur test » avant de pouvoir se connecter à Google Drive.</li>
         <li>La connexion à Google Drive peut expirer après un certain temps (généralement autour d'une heure, parfois plus court en phase de test) ; il suffit alors d'appuyer de nouveau sur « 🔄 Synchroniser » pour se reconnecter.</li>
         <li>La fusion de conflits se fait par fiche entière (la plus récente gagne), pas encore un écran d'arbitrage champ par champ.</li>
-        <li>L'assistant IA intégré (chapitre 10 ter) reposait sur l'ancien serveur central et n'est plus disponible pour l'instant.</li>
+        <li>L'assistant IA intégré (chapitre 10 ter) est indépendant de cette synchronisation Google Drive : il passe par son propre petit serveur relais (Cloudflare Worker), qui doit rester actif pour que l'assistant réponde.</li>
       </ul>
 
       <h3>10 bis.11 En cas de problème (aide-mémoire)</h3>
@@ -4760,10 +4875,9 @@ function renderGuide(container){
 
     <div class="guide-chapter" id="g10ter">
       <h2>10 ter. Assistant IA intégré 🤖</h2>
-      <div class="guide-callout attention"><b class="gc-label">⚠️ Actuellement indisponible</b>Ce module reposait sur l'ancien serveur central (Render), désormais désactivé au profit de Google Drive (chapitre 10 bis). La bulle 💬 affiche un message « indisponible » au lieu de planter, mais aucune réponse n'est générée pour l'instant. Le reste de ce chapitre décrit son fonctionnement pour référence, en cas de réactivation future.</div>
-      <p>Une bulle <b>💬</b> est visible dans la barre supérieure une fois connecté. Elle ouvre un panneau de discussion avec un assistant intelligent, capable de répondre à des questions, de rédiger des documents administratifs, et de préparer des cours complets pour les enseignants.</p>
+      <p>Une bulle <b>💬</b> est visible dans la barre supérieure une fois connecté. Elle ouvre un panneau de discussion avec un assistant intelligent, capable de répondre à des questions, de rédiger des documents administratifs, de traduire ou d'expliquer des mots difficiles, et de préparer des cours complets pour les enseignants — via un petit serveur relais dédié (Cloudflare Worker) qui appelle l'API Gemini, indépendant de la synchronisation des données (chapitre 10 bis).</p>
 
-      <h3>10 ter.1 Les six modes de l'assistant</h3>
+      <h3>10 ter.1 Les sept modes de l'assistant</h3>
       <table>
         <thead><tr><th>Mode</th><th>À utiliser pour</th></tr></thead>
         <tbody>
@@ -4773,9 +4887,11 @@ function renderGuide(container){
           <tr><td>🗒️ Organiser des notes</td><td>Mettre de l'ordre dans des notes prises en vrac (classe, entretien, réunion rapide).</td></tr>
           <tr><td>📘 Créer un cours</td><td>Générer un cours complet et structuré pour les élèves (voir 10 ter.2 ci-dessous).</td></tr>
           <tr><td>🏗️ Projets</td><td>Rédiger un dossier de projet complet : titre, type, durée, bénéficiaires, contexte et besoin, objectifs et budget indicatif (justification, plan d'action, calendrier, budget prévisionnel, indicateurs de suivi), prêt à être imprimé ou soumis.</td></tr>
+          <tr><td>🈯 Traduire un mot</td><td>Taper un mot ou une expression dans une autre langue, ou une expression compliquée en français, pour obtenir une traduction et/ou une explication en français facile, avec un exemple.</td></tr>
         </tbody>
       </table>
       <p>En choisissant un mode, un texte d'aide s'affiche juste au-dessus du champ de saisie pour rappeler quoi taper, et pour les modes Compte-rendu, Lettre et Notes, un modèle à compléter (avec les champs Date, Participants, Objet…) se remplit automatiquement dans la zone de texte.</p>
+      <div class="guide-callout astuce"><b class="gc-label">💡 Choisir la langue de réponse</b>Le menu déroulant <b>« 🌐 Répondre en »</b>, au-dessus du champ de saisie, permet de demander une réponse en anglais, espagnol, arabe, soussou, poular ou maninka plutôt qu'en français, pour les modes Question libre, Compte-rendu, Lettre et Notes (le mode « Traduire un mot » répond quant à lui toujours en français facile, quel que soit ce choix, puisque c'est justement son rôle). La qualité de la réponse dans les langues nationales peut être moins fiable que pour le français ou l'anglais.</div>
       <div class="guide-callout attention"><b class="gc-label">⚠️ L'assistant n'invente jamais</b>Il ne complète jamais lui-même un nom, une date, une décision ou une donnée chiffrée absente des informations fournies : il le signale et demande une précision plutôt que de deviner.</div>
 
       <h3>10 ter.2 Créer un cours — les deux méthodes</h3>
@@ -4811,7 +4927,6 @@ function renderGuide(container){
 
       <h3>10 ter.4 Limites à connaître</h3>
       <div class="guide-callout attention"><b class="gc-label">⚠️ Service gratuit à usage limité</b>L'assistant utilise une API d'intelligence artificielle gratuite (Gemini), avec un nombre de requêtes par minute limité. En cas d'usage intensif simultané par plusieurs personnes, un message « quota atteint » peut apparaître — il suffit de réessayer une minute plus tard. L'assistant peut écrire du code informatique dans n'importe quel langage, mais ne l'exécute pas.</div>
-      <p>L'assistant nécessite l'ancien serveur central, actuellement désactivé (voir l'encadré en début de chapitre) : la bulle indique qu'il n'est pas disponible.</p>
     </div>
 
     <div class="guide-chapter" id="g11n">
@@ -5055,6 +5170,285 @@ function estFondateurActuel(){
   return ['fondateur','chef_etablissement'].includes(sessionStorage.getItem('tekoulo_role'));
 }
 const PARAM_TABS_RESERVES_FONDATEUR = ['etab','fraisCycle','primes'];
+function techniqueContenuHTML(){
+  return `
+      <div class="section-title"><h3><span class="bar"></span>🛠️ Module technique — Fonctionnement, dépannage &amp; bonnes pratiques</h3></div>
+      <div class="hint-box">Ce module regroupe, en un seul endroit, tout ce qu'il faut savoir pour utiliser l'application sereinement au quotidien : comment elle fonctionne, comment connecter plusieurs appareils, que faire en cas de problème, et les gestes à éviter. À consulter avant toute manipulation délicate (changement de compte, réinitialisation, connexion d'un nouvel appareil…).</div>
+
+      <div class="section-title"><h3><span class="bar"></span>1. Comment fonctionne l'application (schéma)</h3></div>
+      <style>
+        .tsch-wrap{display:flex; flex-direction:column; align-items:center; gap:6px; margin:10px 0 18px;}
+        .tsch-box{border:2px solid var(--field-border); background:var(--field-bg); border-radius:10px; padding:10px 16px; font-size:12.5px; font-weight:700; text-align:center; max-width:320px; box-shadow:var(--shadow);}
+        .tsch-box.drive{border-color:var(--gold-deep); background:#FDF6E3;}
+        .tsch-box.device{border-color:var(--green-deep); background:#EAF3EE;}
+        .tsch-box.file{border-color:var(--teal); background:#EAF6F6;}
+        .tsch-arrow{font-size:20px; color:var(--ink-soft); line-height:1;}
+        .tsch-label{font-size:11px; color:var(--ink-soft); font-weight:600; margin-top:-4px; text-align:center;}
+        .tsch-row{display:flex; gap:14px; flex-wrap:wrap; justify-content:center;}
+        .tsch-side{display:flex; align-items:center; gap:10px; margin-top:14px; flex-wrap:wrap; justify-content:center;}
+      </style>
+      <div class="tsch-wrap">
+        <div class="tsch-box device">💻📱 Cet appareil<br><span style="font-weight:500;">Stockage local du navigateur — fonctionne même hors-ligne</span></div>
+        <div class="tsch-arrow">⇅</div>
+        <div class="tsch-label">Synchronisation automatique si connecté à Google Drive</div>
+        <div class="tsch-box drive">☁️ Dossier Google Drive partagé<br><span style="font-weight:500;">Référence commune à toute l'école</span></div>
+        <div class="tsch-arrow">⇅</div>
+        <div class="tsch-label">Chaque appareil connecté au même dossier</div>
+        <div class="tsch-row">
+          <div class="tsch-box device">💻 Appareil du Fondateur</div>
+          <div class="tsch-box device">📱 Appareil du Comptable</div>
+          <div class="tsch-box device">💻 Appareil du Directeur</div>
+        </div>
+      </div>
+      <div class="tsch-side">
+        <div class="tsch-box file">📄 Fichier de sauvegarde (.json)<br><span style="font-weight:500;">Copie de secours, indépendante de Drive</span></div>
+        <div class="tsch-arrow">⇄</div>
+        <div style="font-size:12px; color:var(--ink-soft); max-width:220px;">Créée manuellement (⭳ Sauvegarder) et restaurée manuellement (⭱ Restaurer) — utile même sans connexion Drive.</div>
+      </div>
+      <div class="guide-callout info"><b class="gc-label">ℹ️ À retenir</b>Les données existent toujours d'abord <b>localement</b> sur l'appareil utilisé. Google Drive et les sauvegardes manuelles sont des <b>copies supplémentaires</b> qui permettent de ne rien perdre et de partager entre appareils — l'application fonctionne même sans aucune des deux, mais alors seulement sur cet appareil.</div>
+
+      <div class="section-title"><h3><span class="bar"></span>2. Du démarrage à la fermeture — ce qui se passe</h3></div>
+      <ol style="font-size:12.8px; color:var(--ink); padding-left:20px; line-height:1.7;">
+        <li><b>Ouverture :</b> l'application charge les données déjà enregistrées sur cet appareil (stockage local du navigateur). Aucune connexion internet n'est nécessaire pour consulter ou saisir des données.</li>
+        <li><b>Pendant l'utilisation :</b> chaque saisie (élève, note, paiement…) est enregistrée immédiatement en local. Si Google Drive est connecté, une synchronisation en arrière-plan envoie ces changements vers le dossier partagé, à intervalles réguliers.</li>
+        <li><b>Connexion à Google Drive :</b> à chaque connexion, l'application vérifie s'il existe des données plus récentes envoyées par un autre appareil, et les récupère.</li>
+        <li><b>Fermeture :</b> il n'y a rien à « enregistrer » avant de fermer — tout est déjà sauvegardé localement au fur et à mesure. Il est toutefois recommandé de laisser une synchronisation se terminer avant de fermer si une modification importante vient d'être faite.</li>
+      </ol>
+
+      <div class="section-title"><h3><span class="bar"></span>3. Consignes claires — à faire / à ne pas faire</h3></div>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr; gap:16px;">
+        <div class="card pad" style="border:2px solid var(--green-deep); background:#EAF3EE;">
+          <p style="margin:0 0 8px; font-weight:800; color:var(--green-deep);">✅ À FAIRE</p>
+          <ul style="font-size:12.5px; padding-left:18px; margin:0; line-height:1.7;">
+            <li>Faire une sauvegarde (⭳) avant toute réinitialisation ou changement de compte Google.</li>
+            <li>Se connecter régulièrement à Google Drive pour garder les appareils à jour.</li>
+            <li>Vérifier, après une longue coupure internet, qu'une synchronisation s'est bien faite avant de saisir de nouvelles données.</li>
+            <li>Garder le mot de passe administrateur et les identifiants du compte Google en lieu sûr.</li>
+            <li>Prévenir le Fondateur avant de connecter un nouvel appareil ou un nouveau compte.</li>
+            <li>Attendre la fin d'une synchronisation (message de confirmation) avant de fermer l'application.</li>
+          </ul>
+        </div>
+        <div class="card pad" style="border:2px solid var(--red); background:#FDF2F2;">
+          <p style="margin:0 0 8px; font-weight:800; color:var(--red);">❌ À NE PAS FAIRE</p>
+          <ul style="font-size:12.5px; padding-left:18px; margin:0; line-height:1.7;">
+            <li>Ne jamais cliquer sur « ✕ Réinitialiser toutes les données » sans sauvegarde récente.</li>
+            <li>Ne pas connecter deux comptes Google différents à deux dossiers Drive différents pour la même école (cela crée des données séparées, non synchronisées entre elles).</li>
+            <li>Ne pas vider le cache/les données du navigateur sans avoir sauvegardé ou synchronisé au préalable.</li>
+            <li>Ne pas modifier les mêmes données sur deux appareils en même temps sans connexion internet (risque de conflit à la synchronisation).</li>
+            <li>Ne pas partager le mot de passe administrateur ou les identifiants Google par un moyen non sécurisé.</li>
+            <li>Ne pas fermer l'onglet brutalement pendant un import ou une restauration de sauvegarde en cours.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="section-title"><h3><span class="bar"></span>4. Connecter plusieurs appareils entre eux</h3></div>
+      <div class="hint-box">Deux méthodes existent ; elles peuvent être utilisées ensemble.</div>
+      <p style="font-weight:700; font-size:13px; margin:14px 0 6px; color:var(--green-deep);">Méthode recommandée — Google Drive (automatique)</p>
+      <ol style="font-size:12.6px; padding-left:20px; line-height:1.7;">
+        <li>Le Fondateur autorise chaque compte Google des personnes concernées (Google Cloud → Utilisateurs test) et partage le dossier Drive avec elles en rôle « Éditeur ».</li>
+        <li>Sur chaque appareil, ouvrir Paramètres → 🔒 Sécurité &amp; comptes → « 🔗 Connecter Google Drive », et choisir le compte autorisé.</li>
+        <li>Une fois connecté, les données se synchronisent automatiquement en arrière-plan sur tous les appareils reliés au même dossier.</li>
+      </ol>
+      <p style="font-weight:700; font-size:13px; margin:14px 0 6px; color:var(--green-deep);">Méthode alternative — fichier lié ou sauvegarde manuelle</p>
+      <ol style="font-size:12.6px; padding-left:20px; line-height:1.7;">
+        <li>Sur l'appareil principal : « 🔗 Fichier lié » → créer un fichier lié dans un dossier Google Drive/OneDrive/Dropbox installé sur l'ordinateur (fonctionne uniquement sur Chrome/Edge, ordinateur).</li>
+        <li>Sur l'autre ordinateur, une fois ce même dossier synchronisé : « 🔗 Fichier lié » → « Ouvrir un fichier existant ».</li>
+        <li>Sur mobile, ou en dépannage ponctuel : exporter une sauvegarde (⭳) sur l'appareil source, puis la restaurer (⭱) sur l'autre appareil.</li>
+      </ol>
+
+      <div class="section-title"><h3><span class="bar"></span>5. Que faire en cas de problème — procédures de réparation</h3></div>
+
+      <div class="card pad" style="margin-bottom:12px;">
+        <p style="margin:0 0 6px; font-weight:700;">🔄 La synchronisation ne fonctionne pas / reste bloquée</p>
+        <ol style="font-size:12.5px; padding-left:18px; margin:0; line-height:1.6;">
+          <li>Vérifier la connexion internet de l'appareil.</li>
+          <li>Cliquer sur « 🔄 Synchroniser » pour relancer manuellement.</li>
+          <li>Se déconnecter puis se reconnecter à Google Drive (Paramètres → Sécurité &amp; comptes).</li>
+          <li>Si le message indique une session expirée, reconnectez-vous simplement avec le même compte.</li>
+          <li>En dernier recours, faire une sauvegarde manuelle (⭳) pour ne rien perdre, puis contacter la personne technique.</li>
+        </ol>
+      </div>
+
+      <div class="card pad" style="margin-bottom:12px;">
+        <p style="margin:0 0 6px; font-weight:700;">⛔ Erreur de connexion à Google Drive (accès refusé, compte non autorisé)</p>
+        <ol style="font-size:12.5px; padding-left:18px; margin:0; line-height:1.6;">
+          <li>Vérifier que le bon compte Google a été choisi lors de la connexion.</li>
+          <li>Demander au Fondateur de vérifier que ce compte est bien ajouté comme « Utilisateur test » (Google Cloud) et qu'il a bien accès au dossier Drive (partagé en « Éditeur »).</li>
+          <li>Réessayer la connexion après cette vérification.</li>
+        </ol>
+      </div>
+
+      <div class="card pad" style="margin-bottom:12px;">
+        <p style="margin:0 0 6px; font-weight:700;">🗑️ Données supprimées ou modifiées par erreur (endommagement par inadvertance)</p>
+        <ol style="font-size:12.5px; padding-left:18px; margin:0; line-height:1.6;">
+          <li>Ne rien saisir de nouveau immédiatement, pour éviter d'écraser une bonne version lors de la prochaine synchronisation.</li>
+          <li>Restaurer la dernière sauvegarde disponible (⭱ Restaurer une sauvegarde) si elle est plus récente que l'erreur.</li>
+          <li>Si aucune sauvegarde locale récente n'existe mais qu'un autre appareil connecté à Google Drive n'a pas encore synchronisé l'erreur, se connecter depuis cet autre appareil pour vérifier s'il détient encore la bonne version, puis la sauvegarder avant toute nouvelle synchronisation.</li>
+          <li>Contacter la personne technique si la donnée perdue est importante et non récupérable par ces moyens.</li>
+        </ol>
+      </div>
+
+      <div class="card pad" style="margin-bottom:12px;">
+        <p style="margin:0 0 6px; font-weight:700;">🌀 Deux versions différentes des données après un changement de compte ou un problème réseau</p>
+        <ol style="font-size:12.5px; padding-left:18px; margin:0; line-height:1.6;">
+          <li>Identifier, sur chaque appareil, quelle version est la plus complète/récente (dates de dernière saisie).</li>
+          <li>Faire une sauvegarde de la version la plus complète (⭳).</li>
+          <li>Restaurer cette sauvegarde sur les autres appareils avant de reprendre la synchronisation normale, pour repartir d'une base commune.</li>
+        </ol>
+      </div>
+
+      <div class="card pad" style="margin-bottom:12px;">
+        <p style="margin:0 0 6px; font-weight:700;">🐌 Application lente, écran blanc, ou message « espace de stockage plein »</p>
+        <ol style="font-size:12.5px; padding-left:18px; margin:0; line-height:1.6;">
+          <li>Faire immédiatement une sauvegarde (⭳) si l'application répond encore.</li>
+          <li>Supprimer les photos ou pièces jointes inutiles dans les fiches concernées pour libérer de la place.</li>
+          <li>Fermer complètement puis rouvrir l'application (ou le navigateur).</li>
+          <li>Si l'écran reste blanc, vider uniquement le cache du navigateur (pas les données de site) puis rouvrir — après avoir vérifié qu'une sauvegarde ou une synchronisation récente existe.</li>
+        </ol>
+      </div>
+
+      <div class="card pad" style="margin-bottom:12px;">
+        <p style="margin:0 0 6px; font-weight:700;">🔑 Mot de passe oublié</p>
+        <ol style="font-size:12.5px; padding-left:18px; margin:0; line-height:1.6;">
+          <li>Pour un compte personnel : demander au Fondateur ou au Chef d'établissement de le recréer (Paramètres → Comptes de connexion par rôle).</li>
+          <li>Pour le mot de passe administrateur : seule une réinitialisation complète permet de revenir au mot de passe par défaut — à utiliser en tout dernier recours, après sauvegarde, car elle efface les données non synchronisées.</li>
+        </ol>
+      </div>
+
+      <div class="guide-callout attention"><b class="gc-label">⚠️ Réinitialisation complète — dernier recours uniquement</b>Le bouton « ✕ Réinitialiser toutes les données » efface définitivement toutes les informations enregistrées sur cet appareil. Il ne doit être utilisé qu'en dernier recours, après une sauvegarde récente confirmée, et idéalement après avoir consulté le Fondateur.</div>
+
+      <div class="section-title"><h3><span class="bar"></span>6. Check-list rapide en cas d'urgence</h3></div>
+      <ol style="font-size:12.8px; padding-left:20px; line-height:1.8;">
+        <li>🧯 Rester calme : les données locales de cet appareil ne disparaissent pas toutes seules.</li>
+        <li>💾 Sauvegarder immédiatement (⭳), même si quelque chose semble aller mal.</li>
+        <li>🚫 Ne pas cliquer sur les boutons rouges (réinitialiser, supprimer) tant que la cause du problème n'est pas identifiée.</li>
+        <li>🔍 Identifier le problème à l'aide des procédures ci-dessus.</li>
+        <li>📞 Si aucune solution ne fonctionne, contacter la personne technique en charge de l'application, avec la sauvegarde faite à l'étape 2 à disposition.</li>
+      </ol>
+
+      <div class="section-title"><h3><span class="bar"></span>7. Autres informations techniques utiles</h3></div>
+      <ul style="font-size:12.6px; padding-left:20px; line-height:1.8;">
+        <li>Les données sont stockées dans le <b>stockage local du navigateur</b> (« localStorage ») — elles sont donc propres à <b>ce navigateur précis</b> sur <b>cet appareil précis</b>. Changer de navigateur (ex. Chrome vers Firefox) sur le même appareil revient à repartir sans données, tant qu'une synchronisation ou restauration n'a pas été faite.</li>
+        <li>Le stockage local a une capacité limitée : au-delà, l'application prévient d'un espace plein — supprimer les photos inutiles et sauvegarder régulièrement évite ce problème.</li>
+        <li>La synchronisation Google Drive ne fonctionne que si l'appareil est connecté à internet ; hors connexion, les modifications restent « en attente » et repartent automatiquement au retour du réseau.</li>
+        <li>Le fichier lié (Chrome/Edge uniquement, ordinateur) n'est pas disponible sur mobile ni sur Firefox/Safari — utiliser alors Google Drive ou la sauvegarde manuelle.</li>
+        <li>Chaque compte Google doit être autorisé individuellement par le Fondateur avant de pouvoir se connecter (sécurité) — un compte non autorisé sera refusé même avec le bon mot de passe.</li>
+        <li>La version de l'application et sa date sont visibles dans l'onglet « 🔒 Sécurité &amp; comptes » ; une vérification manuelle des mises à jour y est possible à tout moment.</li>
+      </ul>
+
+      <div class="section-title"><h3><span class="bar"></span>8. Raccourcis utiles — accès rapide</h3></div>
+      <div class="hint-box">Ces liens ouvrent directement les pages nécessaires à la gestion technique du compte Google et du dossier partagé (dans un nouvel onglet). Réservés au Fondateur ou à la personne technique de l'école.</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Lien</th><th>Accès direct à…</th></tr></thead>
+        <tbody>
+          <tr>
+            <td style="white-space:nowrap;"><a href="https://drive.google.com/drive/folders/${GOOGLE_DRIVE_FOLDER_ID}" target="_blank" rel="noopener">📁 Dossier Drive de l'école</a></td>
+            <td>Le dossier Google Drive partagé exact utilisé par cette application — contient les fichiers .json synchronisés (élèves, notes, frais…).</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">console.cloud.google.com/auth/audience</a></td>
+            <td>Autoriser un nouveau compte Google à se connecter à l'application (section « Utilisateurs test » → « Add users »).</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">console.cloud.google.com/apis/credentials</a></td>
+            <td>Voir ou modifier l'identifiant client OAuth (Client ID) utilisé par l'application pour se connecter à Google Drive.</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><a href="https://drive.google.com" target="_blank" rel="noopener">drive.google.com</a></td>
+            <td>Ouvrir Google Drive en général — pour retrouver, déplacer ou vérifier l'espace disponible du dossier partagé.</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a></td>
+            <td>Voir et révoquer l'accès des applications connectées à un compte Google — utile pour déconnecter proprement un ancien compte avant d'en autoriser un nouveau.</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><a href="https://myaccount.google.com/security" target="_blank" rel="noopener">myaccount.google.com/security</a></td>
+            <td>Vérifier la sécurité d'un compte Google (appareils connectés, activité récente, changement de mot de passe).</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><a href="https://console.cloud.google.com" target="_blank" rel="noopener">console.cloud.google.com</a></td>
+            <td>Tableau de bord général du projet Google Cloud de l'école (vue d'ensemble, réservé au créateur du projet).</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><button type="button" class="btn ghost sm" onclick="LINKED_FILE_HANDLE? unlinkFile() : openLinkedFileMenu()">🔗 Fichier lié</button></td>
+            <td>Ouvre (ou crée) directement le fichier lié synchronisé automatiquement avec un dossier local Google Drive/OneDrive/Dropbox (chapitre 9.1) — Chrome/Edge sur ordinateur uniquement.</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><button type="button" class="btn ghost sm" onclick="exportAllData()">⭳ Télécharger une sauvegarde</button></td>
+            <td>Lance immédiatement le téléchargement d'une sauvegarde complète des données de cet appareil, sans avoir à changer d'onglet.</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><button type="button" class="btn ghost sm" onclick="window.open(window.location.href, '_blank')">🌐 Ouvrir cette application</button></td>
+            <td>Ouvre l'application dans un nouvel onglet du navigateur — pratique pour travailler sur deux fenêtres à la fois, ou en obtenir le lien à partager.</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><a href="${TEKOULO_API_URL||'#'}" target="_blank" rel="noopener">🤖 Serveur de l'assistant IA</a></td>
+            <td>Le petit serveur relais (Cloudflare Worker) qui fait fonctionner l'assistant IA intégré (chapitre 10 ter). Une page presque vide qui s'affiche est normale : c'est une adresse technique (API), pas un site à consulter. Il doit rester actif pour que l'assistant réponde.</td>
+          </tr>
+          <tr>
+            <td style="white-space:nowrap;"><a href="https://dash.cloudflare.com" target="_blank" rel="noopener">dash.cloudflare.com</a></td>
+            <td>Tableau de bord Cloudflare — pour vérifier l'état, redémarrer ou consulter les journaux (logs) du serveur relais de l'assistant IA, en cas de panne de ce dernier.</td>
+          </tr>
+        </tbody>
+      </table></div>
+      <div class="guide-callout attention"><b class="gc-label">⚠️ Accès sensible</b>Ces pages permettent de modifier qui peut accéder aux données de l'école. Elles ne doivent être ouvertes que par le Fondateur ou une personne de confiance, connectée avec le compte Google qui a créé le projet.</div>
+
+      <div class="section-title"><h3><span class="bar"></span>9. Dictionnaire technique — mots et expressions fréquents</h3></div>
+      <div class="hint-box">Petit lexique des mots que la personne technique (ou un message d'erreur) peut utiliser, expliqués simplement — pour comprendre sans avoir à demander à chaque fois.</div>
+
+      <p style="font-weight:700; font-size:13px; margin:14px 0 6px; color:var(--green-deep);">🔧 Modification &amp; dépannage</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th style="white-space:nowrap;">Mot / expression</th><th>Signification</th></tr></thead>
+        <tbody>
+          <tr><td style="white-space:nowrap;"><b>Bug</b></td><td>Une erreur ou un comportement anormal de l'application (un bouton qui ne répond pas, un calcul faux, un affichage bizarre).</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Cache</b></td><td>Une copie temporaire de fichiers gardée par le navigateur pour aller plus vite. Il peut parfois empêcher de voir les toutes dernières modifications à l'écran.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Vider le cache</b></td><td>Effacer cette mémoire temporaire du navigateur — sans toucher aux données de l'application — pour résoudre un affichage bloqué ou un écran blanc.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Figé / Planté</b></td><td>L'application ne répond plus aux clics. On ferme complètement l'onglet ou le navigateur, puis on le rouvre.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Journal (logs)</b></td><td>La liste détaillée des évènements techniques enregistrés en coulisses — utile à la personne technique pour comprendre l'origine d'un problème.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Réinitialisation</b></td><td>Remise à zéro complète qui efface toutes les données de l'appareil. Dernier recours uniquement, et seulement après une sauvegarde.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Version / Mise à jour</b></td><td>Le numéro qui identifie la variante actuelle de l'application. Une mise à jour peut corriger des bugs ou ajouter de nouvelles fonctions.</td></tr>
+        </tbody>
+      </table></div>
+
+      <p style="font-weight:700; font-size:13px; margin:14px 0 6px; color:var(--green-deep);">🔄 Synchronisation</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th style="white-space:nowrap;">Mot / expression</th><th>Signification</th></tr></thead>
+        <tbody>
+          <tr><td style="white-space:nowrap;"><b>Synchroniser</b></td><td>Mettre à jour les données entre cet appareil et le dossier Google Drive partagé, dans les deux sens.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Conflit</b></td><td>Deux appareils ont modifié la même donnée en même temps ; il faut alors décider quelle version garder.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Hors-ligne</b></td><td>Sans connexion internet. Les données restent enregistrées sur l'appareil, en attendant la prochaine synchronisation possible.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Sauvegarde</b></td><td>Un fichier (.json) téléchargé qui contient une copie complète des données à un instant précis.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Restaurer</b></td><td>Remplacer les données actuelles de l'appareil par celles d'une sauvegarde ou d'un fichier lié.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Fichier lié</b></td><td>Un fichier de données relié automatiquement à un dossier Google Drive/OneDrive/Dropbox installé sur l'ordinateur.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Dossier partagé</b></td><td>L'emplacement unique sur Google Drive que tous les appareils autorisés de l'école utilisent comme référence commune.</td></tr>
+        </tbody>
+      </table></div>
+
+      <p style="font-weight:700; font-size:13px; margin:14px 0 6px; color:var(--green-deep);">⚙️ Configuration</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th style="white-space:nowrap;">Mot / expression</th><th>Signification</th></tr></thead>
+        <tbody>
+          <tr><td style="white-space:nowrap;"><b>Paramètres</b></td><td>La section de l'application où l'on règle l'identité de l'école, la sécurité, la sauvegarde, etc.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Client ID (identifiant client)</b></td><td>Un code technique qui identifie l'application auprès de Google, nécessaire pour activer la connexion à Google Drive.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>API</b></td><td>Le moyen par lequel l'application communique avec un service extérieur, comme Google Drive ou l'assistant IA.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Serveur (relais)</b></td><td>Le programme distant (ici sur Cloudflare) qui fait fonctionner l'assistant IA intégré ; il doit rester actif pour que l'assistant réponde.</td></tr>
+        </tbody>
+      </table></div>
+
+      <p style="font-weight:700; font-size:13px; margin:14px 0 6px; color:var(--green-deep);">🔑 Connexion</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th style="white-space:nowrap;">Mot / expression</th><th>Signification</th></tr></thead>
+        <tbody>
+          <tr><td style="white-space:nowrap;"><b>Identifiant</b></td><td>Le nom ou code utilisé pour se connecter à un compte, différent du mot de passe.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Authentification</b></td><td>La vérification de l'identité d'une personne, en général par identifiant + mot de passe.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Utilisateur test</b></td><td>Un compte Google explicitement autorisé par le Fondateur, dans Google Cloud, à se connecter à l'application.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Session expirée</b></td><td>La preuve de connexion n'est plus valable après un certain temps ; il suffit de se reconnecter avec le même compte.</td></tr>
+          <tr><td style="white-space:nowrap;"><b>Compte autorisé</b></td><td>Un compte Google ayant reçu le droit d'accéder au dossier Drive partagé de l'école.</td></tr>
+        </tbody>
+      </table></div>
+  `;
+}
+
 function renderParametres(container){
   const p = getParams();
   const fondateurConnecte = estFondateurActuel();
@@ -5072,6 +5466,7 @@ function renderParametres(container){
       ${fondateurConnecte && isPrive() ? `<button type="button" class="params-tab" data-tab="primes" onclick="paramSwitchTab('primes')">💰 Primes salariales</button>` : ''}
       <button type="button" class="params-tab" data-tab="securite" onclick="paramSwitchTab('securite')">🔒 Sécurité &amp; comptes</button>
       <button type="button" class="params-tab" data-tab="sauvegarde" onclick="paramSwitchTab('sauvegarde')">💾 Sauvegarde &amp; données</button>
+      <button type="button" class="params-tab" data-tab="technique" onclick="paramSwitchTab('technique')">🛠️ Technique &amp; Dépannage</button>
     </div>
 
     <div class="params-panel" id="panel-etab">
@@ -5289,6 +5684,10 @@ function renderParametres(container){
       ${retenueSalarialeFormHTML()}
       `}
     </div>
+
+    <div class="params-panel" id="panel-technique">
+      <div id="technique-zone"></div>
+    </div>
   `;
   updateLinkedFileStatus();
   renderComptesRoleListe();
@@ -5301,6 +5700,7 @@ function renderParametres(container){
   roleSelect.addEventListener('change', updateRoleDesc);
   compteRoleCycleChanged();
   paramSwitchTab(lastTab);
+  techniqueAfficherEcran();
 }
 function paramSwitchTab(key){
   if(PARAM_TABS_RESERVES_FONDATEUR.includes(key) && !estFondateurActuel()){
@@ -15665,6 +16065,7 @@ const ASSISTANT_CONSIGNES = {
   notes: "Colle tes notes brutes (phrases courtes, abréviations, désordre) — l'assistant les classe sans en changer le sens.",
   cours: "Renseigne la matière, le niveau, le chapitre, le titre et, si tu le souhaites, les sous-titres à traiter — ou importe la répartition du programme pour un pré-remplissage et une génération automatiques.",
   projets: "Renseigne le titre, le contexte/besoin et les objectifs du projet — l'assistant rédige automatiquement un dossier de projet complet (justification, objectifs, plan d'action, calendrier, budget prévisionnel, indicateurs de suivi) prêt à être imprimé ou soumis.",
+  traduire: "Tape un mot ou une expression — dans une autre langue, ou en français compliqué (administratif, juridique, technique...) — l'assistant le traduit et l'explique en français facile, avec un exemple. (Ce mode répond toujours en français facile, quel que soit le choix fait dans « 🌐 Répondre en ».)",
 };
 
 function assistantChoisirMode(mode){
@@ -15690,6 +16091,7 @@ function assistantChoisirMode(mode){
     if(formCours) formCours.style.display = 'none';
     if(formProjet) formProjet.style.display = 'none';
     if(ligneInput) ligneInput.style.display = 'flex';
+    if(champ) champ.placeholder = (mode==='traduire') ? 'Ex : "predicament", "in medias res", ou une expression administrative compliquée...' : "Pose ta question, ou choisis un mode ci-dessus...";
     if(ASSISTANT_MODELES[mode] && !champ.value){
       champ.value = ASSISTANT_MODELES[mode];
       champ.focus();
@@ -16298,7 +16700,21 @@ async function assistantAppelAPI(message, pieceJointe, mode){
   // l'historique d'une conversation libre sans rapport, pour éviter des réponses
   // incohérentes et pour ne pas alourdir inutilement la requête envoyée à l'IA.
   const historiquePertinent = (modeEffectif==='cours' || modeEffectif==='projets') ? [] : assistantHistorique;
-  const corpsRequete = {message, historique: historiquePertinent, mode: modeEffectif};
+  // Mode « Traduire un mot » : le champ de saisie sert à taper le mot/l'expression ; on
+  // reformule ici la consigne complète envoyée à l'IA, qui répond toujours en français facile.
+  let messageEnvoye = message;
+  if(modeEffectif==='traduire'){
+    messageEnvoye = `Traduis et/ou explique en français facile le mot ou l'expression suivant, avec un exemple simple d'utilisation : "${message}". S'il est écrit dans une autre langue, traduis-le d'abord en français avant de l'expliquer. S'il est déjà en français mais compliqué (mot rare, expression administrative, juridique ou technique), réexplique-le simplement. Réponds toujours en français, de façon courte et claire.`;
+  } else {
+    // Pour les modes de conversation/rédaction, on respecte la langue choisie dans le menu
+    // déroulant « 🌐 Répondre en » (le français reste la langue par défaut, sans consigne ajoutée).
+    const selectLangue = document.getElementById('assistant-langue');
+    const langueChoisie = selectLangue ? selectLangue.value : 'Français';
+    if(langueChoisie && langueChoisie !== 'Français' && (modeEffectif==='general' || modeEffectif==='reunion' || modeEffectif==='lettre' || modeEffectif==='notes')){
+      messageEnvoye = `Réponds uniquement en ${langueChoisie}. ${message}`;
+    }
+  }
+  const corpsRequete = {message: messageEnvoye, historique: historiquePertinent, mode: modeEffectif};
   if(pieceJointe){
     corpsRequete.piece_jointe = {
       nom: pieceJointe.nom,
@@ -16357,6 +16773,96 @@ async function assistantEnvoyerMessage(message, messageAffiche, pieceJointe){
     assistantAjouterMessage('assistant', '⚠ ' + data.error);
   }
 }
+
+/* ============================ COLONNES FIGÉES (IDENTIFICATION) ============================
+   Fige automatiquement, dans TOUS les tableaux de l'application, les colonnes d'identification
+   habituelles (N°/Rang, Identifiant/Matricule, Prénom(s), Nom, Sexe) pour qu'elles restent visibles
+   pendant le défilement horizontal — sans avoir à toucher chaque fonction d'affichage de tableau. */
+function figerNormaliserTexte(s){
+  return (s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+}
+function figerCategorieColonne(txt){
+  const t = figerNormaliserTexte(txt);
+  const cats = [];
+  if(/^(n|num|numero|numero d ordre|rang)$/.test(t)) cats.push('ordre');
+  if(/^(identifiant|matricule)$/.test(t)) cats.push('id');
+  if(/^(prenom|prenoms)$/.test(t)) cats.push('prenom');
+  if(/^(nom|noms)$/.test(t)) cats.push('nom');
+  if(/^(prenom et nom|prenoms et nom|prenom et noms|prenoms et noms|nom et prenom|noms et prenoms)$/.test(t)){ cats.push('prenom'); cats.push('nom'); }
+  if(/^sexe$/.test(t)) cats.push('sexe');
+  return cats; // tableau vide si la colonne ne correspond à aucune catégorie ciblée
+}
+/* Analyse un tableau une seule fois (marqueur data-fige-analyse) : détermine quelles colonnes
+   figer et pose les classes correspondantes. Ne fige rien si le tableau a moins de deux colonnes
+   d'identification (évite de figer, par exemple, une simple colonne « Nom » isolée et sans rapport). */
+function figerDetecterTableau(table){
+  if(table.dataset.figeAnalyse) return;
+  table.dataset.figeAnalyse = '1';
+  try{
+    const ligneEntete = table.querySelector('thead tr') || table.querySelector('tr');
+    if(!ligneEntete) return;
+    const ths = Array.from(ligneEntete.children);
+    if(ths.some(th=>th.hasAttribute('colspan'))) return; // en-tête à colonnes fusionnées : trop ambigu, on n'y touche pas
+    const categoriesParColonne = ths.map(th=>figerCategorieColonne(th.textContent));
+    const categoriesDistinctes = new Set();
+    categoriesParColonne.forEach(cats=>cats.forEach(c=>categoriesDistinctes.add(c)));
+    if(categoriesDistinctes.size < 2) return;
+    let dernierIndex = -1;
+    categoriesParColonne.forEach((cats, idx)=>{ if(cats.length) dernierIndex = idx; });
+    const lignesCorps = table.querySelectorAll(':scope > tbody > tr');
+    categoriesParColonne.forEach((cats, idx)=>{
+      if(!cats.length) return;
+      ths[idx].classList.add('col-frozen');
+      if(idx===dernierIndex) ths[idx].classList.add('col-frozen-last');
+      lignesCorps.forEach(tr=>{
+        const cell = tr.children[idx];
+        if(!cell) return;
+        cell.classList.add('col-frozen');
+        if(idx===dernierIndex) cell.classList.add('col-frozen-last');
+      });
+    });
+  }catch(e){ /* un tableau récalcitrant ne doit jamais bloquer les autres */ }
+}
+/* Recalcule les décalages « left » (en pixels réels, mesurés) de chaque colonne figée — nécessaire
+   car la largeur des colonnes dépend du contenu et varie d'un tableau et d'une donnée à l'autre. */
+function figerRecalculerPositions(root){
+  const scope = root || document;
+  scope.querySelectorAll('table').forEach(table=>{
+    try{
+      figerDetecterTableau(table);
+      const ligneEntete = table.querySelector('thead tr') || table.querySelector('tr');
+      if(!ligneEntete) return;
+      const ths = Array.from(ligneEntete.children);
+      if(!ths.some(th=>th.classList.contains('col-frozen'))) return;
+      const lignesCorps = table.querySelectorAll(':scope > tbody > tr');
+      let cumul = 0;
+      ths.forEach((th, idx)=>{
+        if(!th.classList.contains('col-frozen')) return;
+        const largeur = th.getBoundingClientRect().width;
+        th.style.left = cumul+'px';
+        lignesCorps.forEach(tr=>{
+          const cell = tr.children[idx];
+          if(cell && cell.classList.contains('col-frozen')) cell.style.left = cumul+'px';
+        });
+        cumul += largeur;
+      });
+    }catch(e){ /* idem : on continue avec les tableaux suivants */ }
+  });
+}
+let _figerColonnesMinuteur = null;
+function figerColonnesPlanifier(root){
+  clearTimeout(_figerColonnesMinuteur);
+  _figerColonnesMinuteur = setTimeout(()=>{ try{ figerRecalculerPositions(root); }catch(e){} }, 180);
+}
+(function initFigerColonnes(){
+  const cible = document.getElementById('content') || document.body;
+  try{
+    const observateur = new MutationObserver(()=> figerColonnesPlanifier());
+    observateur.observe(cible, {childList:true, subtree:true});
+  }catch(e){}
+  window.addEventListener('resize', ()=> figerColonnesPlanifier());
+  figerColonnesPlanifier();
+})();
 </script>
 
 <!-- ===================== EXTENSION PROFESSIONNELLE V121 ===================== -->
@@ -16979,6 +17485,19 @@ async function assistantEnvoyerMessage(message, messageAffiche, pieceJointe){
     <button class="assistant-mode-btn" data-mode="notes" onclick="assistantChoisirMode('notes')">🗒️ Organiser des notes</button>
     <button class="assistant-mode-btn" data-mode="cours" onclick="assistantChoisirMode('cours')">📘 Créer un cours</button>
     <button class="assistant-mode-btn" data-mode="projets" onclick="assistantChoisirMode('projets')">🏗️ Projets</button>
+    <button class="assistant-mode-btn" data-mode="traduire" onclick="assistantChoisirMode('traduire')">🈯 Traduire un mot</button>
+  </div>
+  <div id="assistant-langue-ligne" style="display:flex; align-items:center; gap:6px; padding:6px 12px 0; font-size:12px;">
+    <label for="assistant-langue" style="font-weight:600; color:var(--ink-soft,#666);">🌐 Répondre en :</label>
+    <select id="assistant-langue" style="flex:0 0 auto; padding:3px 6px; border-radius:6px; border:1px solid var(--line,#ccc); font-size:12px; background:#fff;">
+      <option value="Français" selected>Français</option>
+      <option value="Anglais">Anglais</option>
+      <option value="Espagnol">Espagnol</option>
+      <option value="Arabe">Arabe</option>
+      <option value="Soussou">Soussou</option>
+      <option value="Poular">Poular (Peul)</option>
+      <option value="Maninka">Maninka (Malinké)</option>
+    </select>
   </div>
   <div id="assistant-consigne">Pose n'importe quelle question : administration, calcul, rédaction, programmation...</div>
 
