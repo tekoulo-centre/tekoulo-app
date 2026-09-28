@@ -773,12 +773,9 @@
   /* Colonnes figées (identification) : N°/Rang, Identifiant/Matricule, Prénom, Nom, Sexe — appliquées
      automatiquement par figerRecalculerPositions() (voir script) à tout tableau qui possède au moins
      deux de ces colonnes, pour qu'elles restent visibles pendant le défilement horizontal. */
-  td.col-frozen, th.col-frozen{ position:sticky; z-index:3; }
-  table thead th.col-frozen{ z-index:6; }
-  table tbody td.col-frozen{ background:#FFFFFF; }
-  table tbody tr:nth-child(even) td.col-frozen{ background:#FCFAF3; }
-  table tbody tr:hover td.col-frozen{ background:#FBF0D2; }
-  td.col-frozen-last, th.col-frozen-last{ box-shadow:3px 0 6px -2px rgba(20,30,20,.28); }
+  /* v158 : colonnes DÉBLOQUÉES — elles défilent désormais normalement avec le reste du tableau
+     (pour les refiger : FIGER_COLONNES_ACTIF = true dans le script, et position:sticky ci-dessous). */
+  td.col-frozen, th.col-frozen{ position:static !important; left:auto !important; box-shadow:none !important; }
   @media print{
     td.col-frozen, th.col-frozen{ position:static !important; left:auto !important; box-shadow:none !important; }
   }
@@ -915,9 +912,15 @@
   /* ===== Carte scolaire / Badge (recto / verso, format CR80 portrait, style document officiel) =====
      Variables --id-* définies par défaut pour la Carte scolaire (vert/or) ; le Badge du personnel les
      surcharge en ligne (bleu nuit/ardoise) afin que les deux documents soient immédiatement distincts. */
-  .id-pair{display:flex; gap:26px; flex-wrap:wrap; justify-content:center; align-items:flex-start;}
-  .id-face-wrap{display:flex; flex-direction:column; align-items:center; gap:7px;}
+  /* Format carnet : recto (gauche) et verso (droite) attachés, même dimension, pli au centre */
+  .id-pair{display:flex; flex-direction:column; align-items:center; gap:7px; max-width:100%; overflow-x:auto; padding:2px 2px 10px;}
+  .id-tags{display:flex; width:100%;}
+  .id-tags .id-face-tag{flex:1; text-align:center;}
   .id-face-tag{font-size:9.5px; letter-spacing:2px; text-transform:uppercase; color:var(--ink-soft); font-weight:700;}
+  .id-sheet{display:flex; flex-wrap:nowrap; flex-shrink:0; border-radius:13px; box-shadow:0 10px 26px rgba(20,30,20,.22);}
+  .id-sheet .id-card2{box-shadow:inset 0 0 0 3px var(--id-bg1), inset 0 0 0 4px var(--id-border);}
+  .id-sheet .id-card2:first-child{border-radius:13px 0 0 13px; border-right:1px dashed #8A8267;}
+  .id-sheet .id-card2:last-child{border-radius:0 13px 13px 0; border-left:1px solid transparent;}
   .id-card2{
     --id-accent:#0B4A32; --id-border:#C9BE96; --id-border-soft:#B7AF92;
     --id-bg1:#FCFAF1; --id-bg2:#F6F1E1; --id-bg3:#F0EAD6; --id-texture:rgba(11,74,50,.035);
@@ -1573,66 +1576,288 @@ function dbGet(key, fallback){
 }
 let TEKOULO_DERNIER_ECHEC_STOCKAGE = 0;
 
-/* ============================ HORODATAGE PAR FICHE (v142 — audit 1.2) ============================
-   But : permettre une fusion fiche par fiche (et non collection entière contre collection entière)
-   lors de la synchronisation, pour que deux appareils modifiant deux fiches différentes de la même
-   collection pendant une coupure ne s'écrasent plus l'un l'autre. Fonctionne uniquement sur les
-   tableaux d'objets identifiables par « id » ou « matricule » ; toute autre forme de donnée (objets,
-   tableaux sans identifiant) n'est pas touchée et continue de fonctionner exactement comme avant. */
-function _cleFiche(obj){
-  if(!obj || typeof obj!=='object') return null;
-  if(obj.id!==undefined && obj.id!==null) return 'id:'+obj.id;
-  if(obj.matricule!==undefined && obj.matricule!==null) return 'matricule:'+obj.matricule;
+/* ============================ MOTEUR DE FUSION (v157 — synchronisation) ============================
+   Principe : chaque fiche porte un horodatage _syncTs (dernière modification). Deux versions d'une
+   même collection sont fusionnées FICHE PAR FICHE : la plus récente l'emporte, une fiche connue d'un
+   seul appareil est conservée (jamais de perte), et une suppression n'est propagée que si elle est
+   enregistrée comme « pierre tombale » (table __tomb) plus récente que la dernière modification de la
+   fiche. Les objets (paramètres, grilles d'emploi du temps, réglages mensuels de salaires) sont fusionnés
+   clé par clé. Les collections qui ne s'y prêtent pas gardent le comportement d'origine.
+   Identifiant d'une fiche : règle propre à la collection (ex. notes = élève + période), sinon __id
+   (toutes les fiches créées par l'application), sinon id, sinon matricule. */
+const CLES_FICHE_PAR_COLLECTION = {
+  notes: r => (r && r.eleveId!==undefined && r.eleveId!==null && r.semestre!==undefined && r.semestre!==null) ? 'n:'+r.eleveId+'|'+r.semestre : null,
+};
+/* Tableaux imbriqués dont chaque élément a un « id » : fusionnés élément par élément pour que deux appareils
+   qui ajoutent chacun un paiement (frais de scolarité) ou un prêt (personnel) sur la même fiche ne s'écrasent pas. */
+const IMBRIQUES_PAR_COLLECTION = { fraisscolarite:['paiements'], personnel:['pretsScolaires'] };
+const CLES_NON_SYNCHRONISEES = ['comptesLocaux','password','passwordTechnique'];
+const DUREE_CONSERVATION_SUPPRESSIONS_MS = 180*24*3600*1000;
+
+let _tsMaxVu = 0;
+try{ _tsMaxVu = Number(localStorage.getItem('tekoulo___maxts')||0) || 0; }catch(e){}
+/* Horodatage monotone : jamais inférieur à un horodatage déjà vu venant d'un autre appareil (atténue
+   l'effet d'une horloge de téléphone en retard : une modification faite APRÈS avoir reçu une donnée l'emporte toujours). */
+function nowTs(){ return Math.max(Date.now(), _tsMaxVu+1); }
+function _majTsVu(ts){
+  if(typeof ts==='number' && isFinite(ts) && ts>_tsMaxVu && ts<Date.now()+2*86400000) _tsMaxVu = ts;
+}
+function _sauverTsVu(){ try{ localStorage.setItem('tekoulo___maxts', String(_tsMaxVu)); }catch(e){} }
+
+function _baseCle(cle){ return String(cle||'').split('__')[0]; }
+function _cleFiche(obj, baseKey){
+  if(!obj || typeof obj!=='object' || Array.isArray(obj)) return null;
+  const spec = baseKey && CLES_FICHE_PAR_COLLECTION[baseKey];
+  if(spec){ const k = spec(obj); if(k) return k; }
+  if(obj.__id!==undefined && obj.__id!==null && obj.__id!=='') return 'u:'+obj.__id;
+  if(obj.id!==undefined && obj.id!==null && obj.id!=='') return 'id:'+obj.id;
+  if(obj.matricule!==undefined && obj.matricule!==null && obj.matricule!=='') return 'm:'+obj.matricule;
   return null;
 }
-function _estCollectionIdentifiable(arr){
-  return Array.isArray(arr) && arr.length>0 && arr.every(o=>_cleFiche(o)!==null);
+function _estCollectionIdentifiable(arr, baseKey){
+  return Array.isArray(arr) && arr.length>0 && arr.every(o=>_cleFiche(o, baseKey)!==null);
 }
-// Ajoute/actualise _syncTs (horodatage de dernière modification) uniquement sur les fiches nouvelles
-// ou réellement modifiées ; conserve l'horodatage existant sur les fiches inchangées. Ne fait rien
-// si la donnée n'est pas un tableau de fiches identifiables (comportement d'origine préservé).
-function tamponnerHorodatageFiches(nouveau, ancien){
-  if(!_estCollectionIdentifiable(nouveau)) return;
+function _canon(v){
+  if(v===null || typeof v!=='object') return JSON.stringify(v);
+  if(Array.isArray(v)) return '['+v.map(_canon).join(',')+']';
+  const ks = Object.keys(v).sort();
+  return '{'+ks.map(k=>JSON.stringify(k)+':'+_canon(v[k])).join(',')+'}';
+}
+function _tsFiche(o){ const t = o && o._syncTs; return (typeof t==='number' && isFinite(t)) ? t : 0; }
+
+// Ajoute/actualise _syncTs uniquement sur les fiches nouvelles ou réellement modifiées.
+function tamponnerHorodatageFiches(nouveau, ancien, baseKey){
+  if(!_estCollectionIdentifiable(nouveau, baseKey)) return;
   const anciennesParCle = new Map();
-  if(Array.isArray(ancien)) ancien.forEach(o=>{ const k=_cleFiche(o); if(k) anciennesParCle.set(k,o); });
-  const maintenant = Date.now();
+  if(Array.isArray(ancien)) ancien.forEach(o=>{ const k=_cleFiche(o, baseKey); if(k) anciennesParCle.set(k,o); });
+  const maintenant = nowTs();
   nouveau.forEach(o=>{
-    const k = _cleFiche(o);
+    const k = _cleFiche(o, baseKey);
     const avant = anciennesParCle.get(k);
     if(!avant){ o._syncTs = maintenant; return; }
     const {_syncTs:_a, ...avantSansTs} = avant;
     const {_syncTs:_n, ...nouveauSansTs} = o;
-    if(JSON.stringify(avantSansTs)!==JSON.stringify(nouveauSansTs)) o._syncTs = maintenant;
+    if(_canon(avantSansTs)!==_canon(nouveauSansTs)) o._syncTs = maintenant;
     else if(avant._syncTs!==undefined) o._syncTs = avant._syncTs;
   });
 }
-// Fusionne deux versions (locale/distante) d'une même collection fiche par fiche, la fiche la plus
-// récente (_syncTs le plus grand) l'emportant. Retourne {fusionPossible:false} si l'une des deux
-// formes n'est pas un tableau de fiches identifiables : dans ce cas l'appelant garde son comportement
-// d'origine (remplacement intégral), pour ne rien changer sur les données qui ne s'y prêtent pas.
+
+/* ---- Suivi local des suppressions (__tomb) et des horodatages de clés d'objets (__objts) ---- */
+function _lireJSONLocal(nom, defaut){
+  try{ const r = localStorage.getItem(DB_PREFIX+nom); return r ? (JSON.parse(r)||defaut) : defaut; }catch(e){ return defaut; }
+}
+function _ecrireJSONLocal(nom, v){
+  try{ localStorage.setItem(DB_PREFIX+nom, JSON.stringify(v)); return true; }catch(e){ return false; }
+}
+function lireEtatLocal(cle){
+  let val;
+  try{ const brut = localStorage.getItem(DB_PREFIX+cle); val = brut!==null ? JSON.parse(brut) : undefined; }catch(e){ val = undefined; }
+  const tomb = _lireJSONLocal('__tomb', {}), objts = _lireJSONLocal('__objts', {});
+  return { val, suppr: Object.assign({}, tomb[cle]||{}), tsObj: Object.assign({}, objts[cle]||{}), maj: 0 };
+}
+function sauverSuiviLocal(cle, suppr, tsObj){
+  const tomb = _lireJSONLocal('__tomb', {}), objts = _lireJSONLocal('__objts', {});
+  const limite = Date.now() - DUREE_CONSERVATION_SUPPRESSIONS_MS;
+  const s = {}; Object.keys(suppr||{}).forEach(k=>{ if(suppr[k] > limite) s[k] = suppr[k]; });
+  const avantT = _canon(tomb[cle]||{}), avantO = _canon(objts[cle]||{});
+  if(Object.keys(s).length) tomb[cle] = s; else delete tomb[cle];
+  if(tsObj && Object.keys(tsObj).length) objts[cle] = tsObj; else delete objts[cle];
+  if(_canon(tomb[cle]||{})!==avantT) _ecrireJSONLocal('__tomb', tomb);
+  if(_canon(objts[cle]||{})!==avantO) _ecrireJSONLocal('__objts', objts);
+}
+// Appelée par dbSet après chaque enregistrement : repère les fiches supprimées et les clés modifiées.
+function majSuiviModifications(cle, ancien, nouveau){
+  const base = _baseCle(cle);
+  const tomb = _lireJSONLocal('__tomb', {}), objts = _lireJSONLocal('__objts', {});
+  const tc = tomb[cle]||{}, oc = objts[cle]||{};
+  let sale = false;
+  const now = nowTs();
+  if(Array.isArray(nouveau)){
+    const nk = new Map();
+    nouveau.forEach(o=>{ const k=_cleFiche(o, base); if(k) nk.set(k,o); });
+    const imb = IMBRIQUES_PAR_COLLECTION[base] || [];
+    if(Array.isArray(ancien)){
+      ancien.forEach(o=>{
+        const k = _cleFiche(o, base); if(!k) return;
+        const nouv = nk.get(k);
+        if(!nouv){ tc[k] = now; sale = true; return; }
+        imb.forEach(f=>{
+          if(!Array.isArray(o[f])) return;
+          const ids = new Set((Array.isArray(nouv[f])?nouv[f]:[]).map(e=>e && e.id));
+          o[f].forEach(e=>{ if(e && e.id!==undefined && !ids.has(e.id)){ tc['n:'+k+'/'+f+'/'+e.id] = now; sale = true; } });
+        });
+      });
+    }
+    nk.forEach((o,k)=>{ if(tc[k]!==undefined && _tsFiche(o) > tc[k]){ delete tc[k]; sale = true; } });
+  } else if(nouveau && typeof nouveau==='object'){
+    const anc = (ancien && typeof ancien==='object' && !Array.isArray(ancien)) ? ancien : {};
+    Object.keys(nouveau).forEach(k=>{
+      if(!(k in anc) || _canon(anc[k])!==_canon(nouveau[k])){ oc[k] = now; sale = true; if(tc['k:'+k]!==undefined) delete tc['k:'+k]; }
+    });
+    Object.keys(anc).forEach(k=>{ if(!(k in nouveau)){ tc['k:'+k] = now; delete oc[k]; sale = true; } });
+  }
+  if(!sale) return;
+  if(Object.keys(tc).length) tomb[cle] = tc; else delete tomb[cle];
+  if(Object.keys(oc).length) objts[cle] = oc; else delete objts[cle];
+  _ecrireJSONLocal('__tomb', tomb); _ecrireJSONLocal('__objts', objts);
+}
+
+/* ---- Fusion de deux états {val, suppr, tsObj} d'une même collection ---- */
+function _forme(v){
+  if(v===undefined || v===null) return 'vide';
+  if(Array.isArray(v)) return v.length ? 'A' : 'vide';
+  if(typeof v==='object') return Object.keys(v).length ? 'O' : 'vide';
+  return 'X';
+}
+function _plusRecent(a, b, tsA, tsB){ // vrai si b l'emporte sur a (départage déterministe si égalité)
+  if(tsB!==tsA) return tsB>tsA;
+  return _canon(b) > _canon(a);
+}
+function _fusionnerImbriques(base, recCle, choisi, autre, suppr){
+  const champs = IMBRIQUES_PAR_COLLECTION[base];
+  if(!champs) return choisi;
+  let res = choisi;
+  champs.forEach(f=>{
+    const ga = Array.isArray(choisi[f]) ? choisi[f] : [], pa = Array.isArray(autre[f]) ? autre[f] : [];
+    if(!ga.length && !pa.length) return;
+    if(![...ga, ...pa].every(e=>e && typeof e==='object' && e.id!==undefined && e.id!==null)) return; // éléments sans id : on ne touche à rien
+    const vivant = e => suppr['n:'+recCle+'/'+f+'/'+e.id]===undefined;
+    const ids = new Set(ga.map(e=>e.id));
+    const union = ga.filter(vivant).concat(pa.filter(e=>!ids.has(e.id) && vivant(e)));
+    if(union.length===ga.length && union.every((e,i)=>e===ga[i])) return; // rien à ajouter/retirer
+    union.sort((x,y)=> String(x.id)<String(y.id) ? -1 : (String(x.id)>String(y.id) ? 1 : 0));
+    if(res===choisi) res = Object.assign({}, choisi);
+    res[f] = union;
+  });
+  return res;
+}
+// Cherche des fiches différentes portant le même identifiant métier (ex. deux élèves de même « identifiant »).
+// Doublons strictement identiques (hors __id/__code/_syncTs) : le plus ancien est gardé, l'autre est supprimé
+// (pierre tombale). Doublons différents : conservés tous les deux et signalés à l'utilisateur.
+function _dedoublonnerMetier(base, liste, suppr, signaler){
+  const champ = (typeof UNIQUE_KEY_FIELDS!=='undefined') ? UNIQUE_KEY_FIELDS[base] : null;
+  if(!champ) return liste;
+  const groupes = new Map();
+  liste.forEach(o=>{
+    const v = String(o && o[champ]!==undefined && o[champ]!==null ? o[champ] : '').trim().toLowerCase();
+    if(!v) return;
+    const g = (o.cycle||'')+'|'+v;
+    if(!groupes.has(g)) groupes.set(g, []);
+    groupes.get(g).push(o);
+  });
+  const retirer = new Set();
+  groupes.forEach(arr=>{
+    if(arr.length<2) return;
+    const sansMeta = o => { const {__id, __code, _syncTs, ...r} = o; return _canon(r); };
+    const trie = arr.slice().sort((x,y)=> String(x.__id||'')<String(y.__id||'') ? -1 : 1);
+    const garde = trie[0];
+    let differents = false;
+    trie.slice(1).forEach(o=>{
+      if(sansMeta(o)===sansMeta(garde)){
+        retirer.add(o);
+        const k = _cleFiche(o, base); if(k) suppr[k] = Math.max(suppr[k]||0, nowTs());
+      } else differents = true;
+    });
+    if(differents && signaler) signaler(base, garde[champ]);
+  });
+  return retirer.size ? liste.filter(o=>!retirer.has(o)) : liste;
+}
+function fusionnerEtat(cle, a, b, opts){
+  opts = opts || {};
+  const base = _baseCle(cle);
+  const suppr = {};
+  [a.suppr, b.suppr].forEach(t=>{ Object.keys(t||{}).forEach(k=>{ suppr[k] = Math.max(suppr[k]||0, t[k]); }); });
+  const fa = _forme(a.val), fb = _forme(b.val);
+  let mode;
+  if(fa==='X' || fb==='X') mode = 'X';
+  else if(fa==='vide' && fb==='vide') mode = 'V';
+  else if(fa==='vide') mode = fb;
+  else if(fb==='vide') mode = fa;
+  else mode = (fa===fb) ? fa : 'X';
+  if(mode==='A'){
+    const ok = v => !Array.isArray(v) || v.every(o=>_cleFiche(o, base)!==null);
+    if(!ok(a.val) || !ok(b.val)) mode = 'X';
+  }
+  if(mode==='X' || mode==='V'){
+    const bDef = b.val!==undefined && b.val!==null, aDef = a.val!==undefined && a.val!==null;
+    let val;
+    if(mode==='V') val = aDef ? a.val : (bDef ? b.val : a.val);
+    else if(!bDef) val = a.val;
+    else if(!aDef) val = b.val;
+    else if(opts.prefereX==='a') val = a.val;
+    else val = (_forme(b.val)==='vide' && _forme(a.val)!=='vide') ? a.val : b.val; // jamais écraser du non-vide par du vide
+    return { val, suppr, tsObj:{}, mode };
+  }
+  if(mode==='A'){
+    const la = Array.isArray(a.val) ? a.val : [], lb = Array.isArray(b.val) ? b.val : [];
+    const carte = arr => { const m = new Map(); arr.forEach(o=>{ const k=_cleFiche(o, base); const ex=m.get(k); if(!ex || _plusRecent(ex, o, _tsFiche(ex), _tsFiche(o))) m.set(k,o); }); return m; };
+    const ma = carte(la), mb = carte(lb);
+    const sortie = [];
+    const traiter = (k, rec) => {
+      _majTsVu(_tsFiche(rec));
+      const tomb = suppr[k];
+      if(tomb!==undefined){ if(tomb >= _tsFiche(rec)) return; delete suppr[k]; }
+      sortie.push(rec);
+    };
+    ma.forEach((l,k)=>{
+      const d = mb.get(k);
+      if(!d){ traiter(k, l); return; }
+      const dGagne = _plusRecent(l, d, _tsFiche(l), _tsFiche(d));
+      let choisi = dGagne ? d : l;
+      choisi = _fusionnerImbriques(base, k, choisi, dGagne ? l : d, suppr);
+      traiter(k, choisi);
+    });
+    mb.forEach((d,k)=>{ if(!ma.has(k)) traiter(k, d); });
+    const liste = _dedoublonnerMetier(base, sortie, suppr, opts.signaler);
+    return { val: liste, suppr, tsObj:{}, mode };
+  }
+  // mode 'O' : objet fusionné clé par clé
+  const oa = (a.val && typeof a.val==='object' && !Array.isArray(a.val)) ? a.val : {};
+  const ob = (b.val && typeof b.val==='object' && !Array.isArray(b.val)) ? b.val : {};
+  const ta = a.tsObj||{}, tb = b.tsObj||{};
+  const val = {}, tsObj = {};
+  const cles = []; Object.keys(oa).forEach(k=>cles.push(k)); Object.keys(ob).forEach(k=>{ if(!(k in oa)) cles.push(k); });
+  cles.forEach(k=>{
+    const hasA = k in oa, hasB = k in ob;
+    let v, ts;
+    if(hasA && hasB){
+      const tsA = ta[k]||0, tsB = tb[k]||0;
+      if(_plusRecent(oa[k], ob[k], tsA, tsB)){ v = ob[k]; ts = tsB; } else { v = oa[k]; ts = tsA; }
+    } else if(hasA){ v = oa[k]; ts = ta[k]||0; }
+    else { v = ob[k]; ts = tb[k]||0; }
+    _majTsVu(ts);
+    const tomb = suppr['k:'+k];
+    if(tomb!==undefined){ if(tomb >= ts) return; delete suppr['k:'+k]; }
+    val[k] = v; if(ts) tsObj[k] = ts;
+  });
+  return { val, suppr, tsObj, mode };
+}
+// Signature indépendante de l'ordre des fiches (évite les allers-retours infinis entre appareils).
+function signatureEtat(cle, val){
+  const base = _baseCle(cle);
+  if(Array.isArray(val) && val.every(o=>_cleFiche(o, base)!==null)){
+    return 'A:'+val.map(o=>_cleFiche(o, base)+'='+_canon(o)).sort().join('\n');
+  }
+  return 'V:'+_canon(val===undefined ? null : val);
+}
+// Compatibilité avec l'ancienne API (2 arguments) : fusion fiche par fiche de deux tableaux.
 function fusionnerCollections(local, distant){
   if(!Array.isArray(local) || !Array.isArray(distant)) return {fusionPossible:false};
-  const idOk = arr => arr.length===0 || arr.every(o=>_cleFiche(o)!==null);
-  if(!idOk(local) || !idOk(distant)) return {fusionPossible:false};
-  const map = new Map();
-  local.forEach(o=>{ const k=_cleFiche(o); if(k) map.set(k,o); });
-  distant.forEach(o=>{
-    const k = _cleFiche(o); if(!k) return;
-    const l = map.get(k);
-    if(!l){ map.set(k,o); return; } // fiche connue seulement de l'autre appareil : on la garde
-    if((o._syncTs||0) > (l._syncTs||0)) map.set(k,o); // version distante plus récente : elle l'emporte, fiche par fiche
-  });
-  return {fusionPossible:true, resultat:Array.from(map.values())};
+  const r = fusionnerEtat('x', {val:local,suppr:{},tsObj:{}}, {val:distant,suppr:{},tsObj:{}});
+  if(r.mode!=='A' && r.mode!=='V') return {fusionPossible:false};
+  return {fusionPossible:true, resultat:r.val};
 }
 
 /* Retourne true si la donnée est bien enregistrée, false sinon (stockage du navigateur plein ou refusé).
    En cas d'échec, un message d'erreur clair est affiché et les messages de succès qui suivent sont masqués. */
 function dbSet(key, value){
-  const _storageKey = DB_PREFIX+yearScopedKey(key);
+  const _cleC = yearScopedKey(key);
+  const _storageKey = DB_PREFIX+_cleC;
+  let _ancien = null;
   try{
     const _brutAvant = localStorage.getItem(_storageKey);
-    const _ancien = _brutAvant ? JSON.parse(_brutAvant) : null;
-    tamponnerHorodatageFiches(value, _ancien);
+    _ancien = _brutAvant ? JSON.parse(_brutAvant) : null;
+    tamponnerHorodatageFiches(value, _ancien, _baseCle(_cleC));
   }catch(e){ /* lecture/horodatage impossible : on continue sans, comportement d'origine */ }
   try{
     localStorage.setItem(_storageKey, JSON.stringify(value));
@@ -1644,7 +1869,8 @@ function dbSet(key, value){
       : "⚠ Échec de l'enregistrement : "+((e && e.message) || e), true);
     return false;
   }
-  pousserVersServeur(yearScopedKey(key), value); // étape 6 : réplique vers le serveur central, en plus du local
+  try{ majSuiviModifications(_cleC, _ancien, value); }catch(e){ /* suivi des suppressions indisponible : la donnée reste bien enregistrée */ }
+  pousserVersServeur(_cleC, value); // réplique vers Google Drive (mise en file d'attente durable si hors connexion)
   return true;
 }
 
@@ -1681,8 +1907,8 @@ const SYNC_BACKEND_ACTIF = true; // un backend de synchronisation (Google Drive)
    connecté) et de le SIGNALER clairement, avec un lien de téléchargement en un clic — voir le
    guide « Procédure de mise à jour » pour la marche à suivre lors de la publication d'une version.
    VERSION_APP doit être incrémenté à chaque nouvelle version envoyée sur Drive. */
-const VERSION_APP = 156;
-const VERSION_APP_DATE = '2026-09-25';
+const VERSION_APP = 158;
+const VERSION_APP_DATE = '2026-09-28';
 const FICHIER_VERSION_APP = 'tekoulo__app_version.json';
 let MAJ_APP_DISPONIBLE = null; // {version, url, date, notes} une fois qu'une version plus récente est détectée
 
@@ -1757,15 +1983,22 @@ function initGoogleDriveAuth(){
       if(resp && resp.access_token){
         googleAccessToken = resp.access_token;
         googleDriveConnecte = true;
+        _jetonExpireA = Date.now() + Math.max(120, Number(resp.expires_in)||3600)*1000;
+        _reconnexionRequise = false;
+        planifierRenouvellementJeton();
+        _jetonResultat(true);
         try{ localStorage.setItem(DB_PREFIX+'google_autorise','1'); }catch(e){}
         try{ localStorage.removeItem(DB_PREFIX+'google_sync_desactive'); }catch(e){} // une reconnexion réussie annule une désactivation précédente
         majStatutGoogleDrive('✅ Connecté à Google Drive.');
         demarrerSynchronisationAutomatique();
+        synchroniserAnneeActive(); // après un renouvellement de jeton : relance immédiate des envois en attente
       } else if(etaitAutomatique){
+        _reconnexionRequise = true; _jetonResultat(false);
         // Échec silencieux au chargement (ex. session Google expirée) : pas d'alerte intempestive,
         // juste un statut discret. L'utilisateur peut toujours cliquer sur "Connecter Google Drive".
         majStatutGoogleDrive('Non reconnecté automatiquement — cliquez sur « Connecter Google Drive » pour vous reconnecter.', true);
       } else {
+        _jetonResultat(false);
         const detail = resp ? ((resp.error||'')+(resp.error_description?(' — '+resp.error_description):'')) : 'aucune réponse reçue';
         majStatutGoogleDrive('⛔ Connexion refusée : '+(detail||'raison inconnue'), true);
         try{ alert('Détail technique Google Drive :\n'+JSON.stringify(resp)); }catch(e){}
@@ -1774,7 +2007,13 @@ function initGoogleDriveAuth(){
     error_callback: (err)=>{
       const etaitAutomatique = _googleReconnexionAutoEnCours;
       _googleReconnexionAutoEnCours = false;
-      majStatutGoogleDrive('⛔ Erreur Google Drive : '+((err&&err.type)||'inconnue'), true);
+      _jetonResultat(false);
+      if(etaitAutomatique){
+        _reconnexionRequise = true;
+        majStatutGoogleDrive('⏳ Session Google à renouveler — touchez l\u2019écran ou cliquez sur « Connecter Google Drive ». Vos données restent enregistrées sur cet appareil.', true);
+      } else {
+        majStatutGoogleDrive('⛔ Erreur Google Drive : '+((err&&err.type)||'inconnue'), true);
+      }
       if(!etaitAutomatique){
         try{ alert('Erreur avant même la fenêtre Google :\n'+JSON.stringify(err)); }catch(e){}
       }
@@ -1808,6 +2047,7 @@ function connecterGoogleDrive(){
 function deconnecterGoogleDrive(){
   try{ if(googleAccessToken && google.accounts && google.accounts.oauth2) google.accounts.oauth2.revoke(googleAccessToken, ()=>{}); }catch(e){}
   googleAccessToken = null; googleDriveConnecte = false;
+  _jetonExpireA = 0; clearTimeout(_jetonTimer); _reconnexionRequise = false;
   arreterSynchronisationAutomatique();
   majStatutGoogleDrive('Déconnecté de Google Drive.');
 }
@@ -1857,15 +2097,86 @@ function majStatutGoogleDrive(message, estErreur){
 }
 function driveFileName(cleComplete){ return 'tekoulo__'+cleComplete.replace(/[^a-zA-Z0-9_]/g,'_')+'.json'; }
 let DERNIERE_ERREUR_SYNC = ''; // diagnostic : dernier message d'erreur technique Drive rencontré
-async function driveRequete(url, options){
-  let res;
-  try{
-    res = await fetch(url, options);
-  }catch(e){
-    DERNIERE_ERREUR_SYNC = 'fetch_failed: '+(e && e.message ? e.message : e);
-    throw e;
+function _pause(ms){ return new Promise(r=>setTimeout(r, ms)); }
+
+/* ---------- Jeton Google : renouvellement automatique (v157) ----------
+   Un jeton Google expire au bout d'environ une heure. Avant cette version, la synchronisation
+   s'arrêtait alors silencieusement jusqu'à un clic manuel. Désormais le jeton est renouvelé en
+   arrière-plan avant expiration, sur erreur 401, et — si le navigateur bloque le renouvellement
+   silencieux (fréquent sur téléphone) — dès le prochain toucher de l'écran. */
+let _jetonExpireA = 0, _jetonTimer = null, _jetonAttente = null;
+let _reconnexionRequise = false, _derniereTentativeGeste = 0, _derniereTentativeSilencieuse = 0;
+function _googleDejaAutorise(){ try{ return localStorage.getItem(DB_PREFIX+'google_autorise')==='1'; }catch(e){ return false; } }
+function _jetonResultat(ok){
+  if(_jetonAttente){ clearTimeout(_jetonAttente.timer); const j = _jetonAttente; _jetonAttente = null; j.resolve(ok); }
+}
+function renouvelerJetonSilencieux(){
+  if(!googleTokenClient || googleDriveSyncDesactiveeParUtilisateur() || !_googleDejaAutorise()) return Promise.resolve(false);
+  if(_jetonAttente) return _jetonAttente.promesse;
+  let res; const promesse = new Promise(r=>{ res = r; });
+  const timer = setTimeout(()=>{ _googleReconnexionAutoEnCours = false; _jetonResultat(false); }, 15000);
+  _jetonAttente = { resolve:res, timer, promesse };
+  _googleReconnexionAutoEnCours = true;
+  try{ googleTokenClient.requestAccessToken({prompt:''}); }
+  catch(e){ _googleReconnexionAutoEnCours = false; _jetonResultat(false); }
+  return promesse;
+}
+function planifierRenouvellementJeton(){
+  clearTimeout(_jetonTimer);
+  if(!_jetonExpireA) return;
+  const delai = Math.max(30000, _jetonExpireA - Date.now() - 5*60*1000);
+  _jetonTimer = setTimeout(async ()=>{
+    const ok = await renouvelerJetonSilencieux();
+    if(!ok){
+      _reconnexionRequise = true;
+      majStatutGoogleDrive('⏳ Session Google à renouveler — touchez l\u2019écran ou cliquez sur « Connecter Google Drive ». Vos données restent enregistrées sur cet appareil.', true);
+    }
+  }, delai);
+}
+function _tentativeReconnexionSurGeste(){
+  if(!_reconnexionRequise || googleDriveConnecte || !googleTokenClient) return;
+  if(googleDriveSyncDesactiveeParUtilisateur() || !_googleDejaAutorise()) return;
+  if(Date.now() - _derniereTentativeGeste < 20000) return;
+  _derniereTentativeGeste = Date.now();
+  _googleReconnexionAutoEnCours = true;
+  try{ googleTokenClient.requestAccessToken({prompt:''}); }catch(e){ _googleReconnexionAutoEnCours = false; }
+}
+
+/* ---------- Requêtes Drive (avec reprises sur limite de débit / erreur serveur / jeton expiré) ---------- */
+async function _driveFetch(url, options){
+  let derniereErreur = null;
+  for(let essai = 0; essai < 3; essai++){
+    try{
+      const res = await fetch(url, options);
+      let reessayer = (res.status===429 || res.status>=500);
+      if(res.status===403){
+        let t = ''; try{ t = await res.clone().text(); }catch(e){}
+        reessayer = /rateLimit|quota/i.test(t);
+      }
+      if(reessayer && essai < 2){ await _pause(700*(essai+1) + Math.random()*400); continue; }
+      return res;
+    }catch(e){
+      derniereErreur = e;
+      DERNIERE_ERREUR_SYNC = 'fetch_failed: '+(e && e.message ? e.message : e);
+      if(essai < 2 && navigator.onLine!==false){ await _pause(700*(essai+1)); continue; }
+      throw e;
+    }
   }
-  if(res.status===401){ googleAccessToken = null; googleDriveConnecte = false; majStatutGoogleDrive('⛔ Session Google Drive expirée — reconnectez-vous.', true); }
+  throw derniereErreur || new Error('fetch_failed');
+}
+async function driveRequete(url, options){
+  options = options || {};
+  if(googleDriveConnecte && _jetonExpireA && Date.now() > _jetonExpireA - 30000) await renouvelerJetonSilencieux();
+  const avecJeton = opt => Object.assign({}, opt, { headers: Object.assign({}, opt.headers||{}, {'Authorization':'Bearer '+googleAccessToken}) });
+  let res = await _driveFetch(url, avecJeton(options));
+  if(res.status===401){
+    const ok = await renouvelerJetonSilencieux();
+    if(ok && googleAccessToken) res = await _driveFetch(url, avecJeton(options));
+    if(res.status===401){
+      googleAccessToken = null; googleDriveConnecte = false; _reconnexionRequise = true;
+      majStatutGoogleDrive('⛔ Session Google Drive expirée — touchez l\u2019écran ou reconnectez-vous. Vos données restent en sécurité sur cet appareil.', true);
+    }
+  }
   if(!res.ok){
     let corps = '';
     try{ corps = await res.clone().text(); }catch(e){}
@@ -1873,219 +2184,409 @@ async function driveRequete(url, options){
   }
   return res;
 }
-async function driveTrouverFichier(nomFichier){
+// Regroupe les fichiers de même nom : le plus ancien fait foi, les autres sont des doublons à fusionner puis supprimer.
+function _construireEntree(fichiers){
+  if(!fichiers || !fichiers.length) return null;
+  const tries = fichiers.slice().sort((a,b)=> String(a.createdTime||'')<String(b.createdTime||'') ? -1 : 1);
+  return { id:tries[0].id, name:tries[0].name, modifiedTime:tries[0].modifiedTime, createdTime:tries[0].createdTime,
+           doublons: tries.slice(1).map(f=>({id:f.id, createdTime:f.createdTime, modifiedTime:f.modifiedTime})) };
+}
+async function driveTrouverEntree(nomFichier){
   const q = encodeURIComponent("name='"+nomFichier.replace(/'/g,"\\'")+"' and '"+GOOGLE_DRIVE_FOLDER_ID+"' in parents and trashed=false");
-  const res = await driveRequete('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,name)', {headers:{'Authorization':'Bearer '+googleAccessToken}});
+  const res = await driveRequete('https://www.googleapis.com/drive/v3/files?q='+q+'&orderBy=createdTime&pageSize=20&fields='+encodeURIComponent('files(id,name,createdTime,modifiedTime)'), {});
   if(!res.ok) throw new Error('drive_list_failed:'+res.status);
   const data = await res.json();
-  return (data.files && data.files[0]) ? data.files[0].id : null;
+  return _construireEntree(data.files||[]);
+}
+async function driveTrouverFichier(nomFichier){
+  const e = await driveTrouverEntree(nomFichier);
+  return e ? e.id : null;
+}
+// Liste tout le dossier en UNE requête (avec pagination) : sert à ne télécharger que les fichiers réellement modifiés.
+async function driveListerDossier(){
+  const q = encodeURIComponent("'"+GOOGLE_DRIVE_FOLDER_ID+"' in parents and trashed=false");
+  const champs = encodeURIComponent('nextPageToken,files(id,name,createdTime,modifiedTime)');
+  const parNom = new Map();
+  let page = '';
+  do{
+    const res = await driveRequete('https://www.googleapis.com/drive/v3/files?q='+q+'&pageSize=1000&fields='+champs+(page?('&pageToken='+encodeURIComponent(page)):''), {});
+    if(!res.ok) throw new Error('drive_list_failed:'+res.status);
+    const data = await res.json();
+    (data.files||[]).forEach(f=>{ if(!parNom.has(f.name)) parNom.set(f.name, []); parNom.get(f.name).push(f); });
+    page = data.nextPageToken || '';
+  }while(page);
+  const liste = new Map();
+  parNom.forEach((fichiers, nom)=>{ liste.set(nom, _construireEntree(fichiers)); });
+  return liste;
 }
 async function driveCreerFichier(nomFichier, contenuTexte){
   const metadata = {name: nomFichier, parents:[GOOGLE_DRIVE_FOLDER_ID], mimeType:'application/json'};
   const boundary = 'tekoulo_'+Date.now();
   const body = '--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+JSON.stringify(metadata)+'\r\n'
              + '--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'+contenuTexte+'\r\n--'+boundary+'--';
-  const res = await driveRequete('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
-    method:'POST', headers:{'Authorization':'Bearer '+googleAccessToken, 'Content-Type':'multipart/related; boundary='+boundary}, body
+  const res = await driveRequete('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime', {
+    method:'POST', headers:{'Content-Type':'multipart/related; boundary='+boundary}, body
   });
   if(!res.ok) throw new Error('drive_create_failed:'+res.status);
   const data = await res.json();
-  return data.id;
+  return { id:data.id, modifiedTime:data.modifiedTime };
 }
 async function driveEcrireFichier(fileId, contenuTexte){
-  const res = await driveRequete('https://www.googleapis.com/upload/drive/v3/files/'+fileId+'?uploadType=media', {
-    method:'PATCH', headers:{'Authorization':'Bearer '+googleAccessToken, 'Content-Type':'application/json'}, body: contenuTexte
+  const res = await driveRequete('https://www.googleapis.com/upload/drive/v3/files/'+fileId+'?uploadType=media&fields=id,modifiedTime', {
+    method:'PATCH', headers:{'Content-Type':'application/json'}, body: contenuTexte
   });
   if(!res.ok) throw new Error('drive_write_failed:'+res.status);
+  const data = await res.json();
+  return data.modifiedTime;
 }
 async function driveLireFichier(fileId){
-  const res = await driveRequete('https://www.googleapis.com/drive/v3/files/'+fileId+'?alt=media', {headers:{'Authorization':'Bearer '+googleAccessToken}});
+  const res = await driveRequete('https://www.googleapis.com/drive/v3/files/'+fileId+'?alt=media', {});
   if(!res.ok) throw new Error('drive_read_failed:'+res.status);
   return await res.text();
 }
+async function driveSupprimerFichier(fileId){ // mise à la corbeille (récupérable dans Drive)
+  const res = await driveRequete('https://www.googleapis.com/drive/v3/files/'+fileId, {
+    method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({trashed:true})
+  });
+  return res.ok;
+}
 
-/* Clés modifiées localement dont l'envoi au serveur n'est pas (encore) confirmé. Tant qu'une clé figure ici,
-   la synchronisation ne la remplace JAMAIS par la copie du serveur : elle la renvoie au serveur à la place. */
+/* ---------- File d'attente des modifications non confirmées ---------- */
+/* Clés modifiées localement dont l'envoi au serveur n'est pas (encore) confirmé. Elles sont conservées
+   sur l'appareil (même hors connexion, même après fermeture) et renvoyées dès que la connexion revient. */
 function getClesEnAttente(){ try{ return JSON.parse(localStorage.getItem(DB_PREFIX+'__pending')||'[]')||[]; }catch(e){ return []; } }
 function setClesEnAttente(l){ try{ localStorage.setItem(DB_PREFIX+'__pending', JSON.stringify(l)); }catch(e){} }
 function marquerEnAttente(cle){ const l = getClesEnAttente(); if(!l.includes(cle)){ l.push(cle); setClesEnAttente(l); } }
 function retirerEnAttente(cle){ const l = getClesEnAttente(); const n = l.filter(x=>x!==cle); if(n.length!==l.length) setClesEnAttente(n); }
-
+function cleSynchronisable(cle){
+  const base = _baseCle(cle);
+  return !!base && !base.startsWith('_') && !CLES_NON_SYNCHRONISEES.includes(base) && base!=='years';
+}
 const _debouncePush = {};
 const _versionPush = {};
-async function envoyerCleAuServeur(cleComplete, valeur){
-  if(!googleDriveConnecte || !googleAccessToken) return false;
-  const v = _versionPush[cleComplete] || 0;
-  try{
-    const nomFichier = driveFileName(cleComplete);
-    let fileId = _driveFileIdCache[cleComplete];
-    if(!fileId) fileId = await driveTrouverFichier(nomFichier);
-    const contenu = JSON.stringify({donnees: valeur, maj: new Date().toISOString()});
-    if(fileId){ await driveEcrireFichier(fileId, contenu); }
-    else { fileId = await driveCreerFichier(nomFichier, contenu); }
-    _driveFileIdCache[cleComplete] = fileId;
-    if((_versionPush[cleComplete]||0)===v) retirerEnAttente(cleComplete);
-    return true;
-  }catch(e){ return false; } // pas de réseau, jeton expiré, ou délai dépassé : la donnée reste en attente
+const _vu = {}; // clé -> dernière modifiedTime Drive intégrée localement (en mémoire seulement : contrôle complet à chaque ouverture)
+
+/* ---------- Lecture de l'état distant ---------- */
+function _parseDistant(texte){
+  let o = null; try{ o = JSON.parse(texte); }catch(e){ o = null; }
+  if(o && typeof o==='object' && !Array.isArray(o) && o.donnees!==undefined){
+    return { val:o.donnees, suppr:(o.suppr && typeof o.suppr==='object') ? o.suppr : {}, tsObj:(o.tsObj && typeof o.tsObj==='object') ? o.tsObj : {},
+             maj: o.maj ? (Date.parse(o.maj)||0) : 0, cle:o.cle||null };
+  }
+  return { val:(o===null ? undefined : o), suppr:{}, tsObj:{}, maj:0, cle:null };
 }
+async function lireEtatDistant(cle, entree){
+  let etat = _parseDistant(await driveLireFichier(entree.id));
+  for(const d of (entree.doublons||[])){ // fichiers en double (création simultanée sur deux appareils) : on fusionne tout
+    try{
+      const e2 = _parseDistant(await driveLireFichier(d.id));
+      const m = fusionnerEtat(cle, etat, e2, {prefereX: e2.maj>etat.maj ? 'b' : 'a'});
+      etat = { val:m.val, suppr:m.suppr, tsObj:m.tsObj, maj:Math.max(etat.maj, e2.maj), cle:etat.cle||e2.cle };
+    }catch(e){}
+  }
+  return etat;
+}
+function _elaguer(suppr){
+  const limite = Date.now() - DUREE_CONSERVATION_SUPPRESSIONS_MS, s = {};
+  Object.keys(suppr||{}).forEach(k=>{ if(suppr[k] > limite) s[k] = suppr[k]; });
+  return s;
+}
+const _doublonsSignales = new Set();
+function _signalerDoublon(base, valeur){
+  const k = base+'|'+valeur; if(_doublonsSignales.has(k)) return;
+  _doublonsSignales.add(k);
+  toast('⚠ Doublon possible après synchronisation : deux fiches « '+base+' » portent le même identifiant « '+valeur+' ». Vérifiez et supprimez la fiche en trop.', true);
+}
+
+/* ---------- Synchronisation d'UNE collection : lecture distante → fusion → écriture locale → envoi ---------- */
+const _chaineCle = {};
+function _enFile(cle, fn){ const p = (_chaineCle[cle]||Promise.resolve()).catch(()=>{}).then(fn); _chaineCle[cle] = p; return p; }
+function synchroniserCle(cle, opts){ return _enFile(cle, ()=>_synchroniserCleCore(cle, opts||{})); }
+async function _synchroniserCleCore(cle, opts){
+  if(!SYNC_BACKEND_ACTIF || !googleDriveConnecte || !googleAccessToken) return {ok:false, changed:false};
+  try{
+    const entree = opts.liste ? (opts.liste.get(driveFileName(cle)) || null) : await driveTrouverEntree(driveFileName(cle));
+    const enAttente = getClesEnAttente().includes(cle);
+    const versionAvant = _versionPush[cle] || 0;
+    if(entree && !enAttente && !opts.force && !(entree.doublons && entree.doublons.length) && _vu[cle]===entree.modifiedTime) return {ok:true, changed:false, saute:true};
+    if(!entree && !enAttente && _forme(lireEtatLocal(cle).val)==='vide') return {ok:true, changed:false};
+    let distant = { val:undefined, suppr:{}, tsObj:{}, maj:0, cle:null };
+    if(entree) distant = await lireEtatDistant(cle, entree);
+
+    /* Bloc SYNCHRONE (aucune attente réseau) : relit le local au dernier moment, fusionne et écrit. Une saisie
+       faite pendant le téléchargement est donc toujours prise en compte, jamais écrasée. */
+    const local = lireEtatLocal(cle);
+    const m = fusionnerEtat(cle, local, distant, { prefereX: enAttente ? 'a' : 'b', signaler:_signalerDoublon });
+    let changed = false;
+    if(m.val!==undefined && signatureEtat(cle, local.val)!==signatureEtat(cle, m.val)){
+      try{ localStorage.setItem(DB_PREFIX+cle, JSON.stringify(m.val)); changed = true; }
+      catch(e){ toast("⚠ Espace de stockage plein : les données reçues du serveur n'ont pas pu être enregistrées sur cet appareil.", true); return {ok:false, changed:false}; }
+    }
+    sauverSuiviLocal(cle, m.suppr, m.tsObj);
+    _sauverTsVu();
+
+    const supprEnvoi = _elaguer(m.suppr);
+    const besoinEnvoi = m.val!==undefined && (!entree
+      || signatureEtat(cle, m.val)!==signatureEtat(cle, distant.val)
+      || _canon(supprEnvoi)!==_canon(distant.suppr||{})
+      || (m.mode==='O' && _canon(m.tsObj)!==_canon(distant.tsObj||{}))
+      || (entree.doublons && entree.doublons.length>0));
+    let modifiedTime = entree ? entree.modifiedTime : null;
+    if(besoinEnvoi){
+      const contenu = JSON.stringify({ v:2, cle, donnees:m.val, maj:new Date().toISOString(), suppr:supprEnvoi, tsObj:m.tsObj });
+      if(entree){
+        modifiedTime = await driveEcrireFichier(entree.id, contenu);
+        for(const d of (entree.doublons||[])){ try{ await driveSupprimerFichier(d.id); }catch(e){} }
+      } else {
+        const cree = await driveCreerFichier(driveFileName(cle), contenu);
+        modifiedTime = cree.modifiedTime;
+        // Création simultanée sur deux appareils : le fichier le plus ancien fait foi, le nôtre part à la corbeille.
+        const verif = await driveTrouverEntree(driveFileName(cle));
+        if(verif && verif.id!==cree.id && (opts.profondeur||0) < 2){
+          try{ await driveSupprimerFichier(cree.id); }catch(e){}
+          return await _synchroniserCleCore(cle, { force:true, profondeur:(opts.profondeur||0)+1 });
+        }
+      }
+    }
+    if(modifiedTime) _vu[cle] = modifiedTime;
+    if((_versionPush[cle]||0)===versionAvant) retirerEnAttente(cle);
+    return {ok:true, changed, envoye:besoinEnvoi};
+  }catch(e){
+    if(!DERNIERE_ERREUR_SYNC) DERNIERE_ERREUR_SYNC = String(e && e.message ? e.message : e);
+    return {ok:false, changed:false}; // pas de réseau, jeton expiré ou Drive indisponible : la donnée reste en attente sur l'appareil
+  }
+}
+// Compatibilité avec les anciens noms
+async function tirerDepuisServeur(cle){ return synchroniserCle(cle); }
+async function envoyerCleAuServeur(cle){ const r = await synchroniserCle(cle); return !!(r && r.ok); }
+
 function pousserVersServeur(cleComplete, valeur){
-  if(!SYNC_BACKEND_ACTIF) return;
+  if(!SYNC_BACKEND_ACTIF || !cleSynchronisable(cleComplete)) return;
   _versionPush[cleComplete] = (_versionPush[cleComplete]||0) + 1;
-  marquerEnAttente(cleComplete);
-  if(!googleDriveConnecte) return;
+  marquerEnAttente(cleComplete); // la modification est notée durablement AVANT tout envoi : rien ne se perd hors connexion
+  if(!googleDriveConnecte){ demanderSynchro(2500); return; }
   clearTimeout(_debouncePush[cleComplete]);
-  _debouncePush[cleComplete] = setTimeout(()=>{ envoyerCleAuServeur(cleComplete, valeur); }, 800);
+  _debouncePush[cleComplete] = setTimeout(async ()=>{
+    const r = await synchroniserCle(cleComplete);
+    if(r && r.changed) notifierDonneesRecues([cleComplete]);
+  }, 1200);
 }
-/* Retourne {ok, changed} au lieu d'un simple booléen : "ok" dit si le serveur a réellement
-   répondu (permet au bouton "Synchroniser" d'afficher un vrai message de réussite/échec au lieu
-   d'avaler silencieusement les erreurs réseau), "changed" dit si des données locales ont été mises
-   à jour. */
-async function _getDistantBrut(cleComplete){
-  try{
-    const nomFichier = driveFileName(cleComplete);
-    let fileId = _driveFileIdCache[cleComplete];
-    if(!fileId){ fileId = await driveTrouverFichier(nomFichier); if(fileId) _driveFileIdCache[cleComplete] = fileId; }
-    if(!fileId) return { ok:true, json: async()=>({donnees:null}) }; // rien sur Drive pour cette collection pour l'instant
-    const texte = await driveLireFichier(fileId);
-    let val; try{ val = JSON.parse(texte); }catch(e){ val = null; }
-    return { ok:true, json: async()=>({donnees: (val && val.donnees!==undefined) ? val.donnees : val}) };
-  }catch(e){
-    return { ok:false, json: async()=>({}) };
-  }
+function viderEnvoisEnAttente(){ // avant de quitter/masquer la page : envoie sans attendre le délai habituel
+  if(!googleDriveConnecte || !googleAccessToken) return;
+  getClesEnAttente().forEach(cle=>{
+    if(!cleSynchronisable(cle)) return;
+    clearTimeout(_debouncePush[cle]);
+    synchroniserCle(cle);
+  });
 }
-async function tirerDepuisServeur(cleComplete){
-  if(!googleDriveConnecte || !googleAccessToken) return {ok:false, changed:false};
+
+/* ---------- Années scolaires : la LISTE des années est partagée (l'année active reste propre à chaque appareil) ---------- */
+async function synchroniserAnnees(liste, force){
+  const cle = 'years';
   try{
-    // 1) Modification locale non confirmée : avant de la renvoyer, on regarde si le serveur a aussi
-    //    progressé entre-temps (un autre appareil a pu écrire pendant que celui-ci était hors-ligne) et,
-    //    si possible, on fusionne fiche par fiche plutôt que d'écraser purement et simplement le serveur
-    //    avec notre seule version (correction de l'audit 1.2 : « la lecture distante est purement ignorée »).
-    if(getClesEnAttente().includes(cleComplete)){
-      const brut = localStorage.getItem(DB_PREFIX+cleComplete);
-      let val; try{ val = brut!==null ? JSON.parse(brut) : undefined; }catch(e){ val = undefined; }
-      if(val!==undefined){
-        try{
-          const resDistant = await _getDistantBrut(cleComplete);
-          if(resDistant.ok){
-            const dataDistant = await resDistant.json();
-            if(dataDistant && dataDistant.donnees!==null && dataDistant.donnees!==undefined){
-              const fusion = fusionnerCollections(val, dataDistant.donnees);
-              if(fusion.fusionPossible) val = fusion.resultat;
-            }
-          }
-        }catch(e){ /* le serveur ne répond pas : on renvoie simplement notre version locale, comme avant */ }
-        const ok = await envoyerCleAuServeur(cleComplete, val);
-        const nouveauLocalJson = JSON.stringify(val);
-        let localAChange = false;
-        if(nouveauLocalJson !== brut){
-          try{ localStorage.setItem(DB_PREFIX+cleComplete, nouveauLocalJson); localAChange = true; }catch(e){}
-        }
-        return {ok, changed:localAChange};
-      }
-      retirerEnAttente(cleComplete);
+    const entree = liste ? (liste.get(driveFileName(cle)) || null) : await driveTrouverEntree(driveFileName(cle));
+    const sigLocale = () => { const y = getYearsData(); return y && Array.isArray(y.list) ? JSON.stringify(y.list.slice().sort()) : ''; };
+    if(entree && !force && _vu[cle]===entree.modifiedTime && _vu['years:local']===sigLocale() && !(entree.doublons && entree.doublons.length)) return {ok:true, changed:false};
+    let distante = [];
+    if(entree){ const d = await lireEtatDistant(cle, entree); if(d.val && Array.isArray(d.val.list)) distante = d.val.list; }
+    // Bloc synchrone : relecture du local puis union des deux listes
+    const local = getYearsData();
+    const nl = local && Array.isArray(local.list) ? local.list.slice() : [];
+    const avant = nl.length;
+    distante.forEach(y=>{ if(y && !nl.includes(y)) nl.push(y); });
+    let changed = false;
+    if(nl.length && (!local || nl.length!==avant)){
+      const nouveau = local ? Object.assign({}, local, {list:nl}) : { list:nl, active:nl.slice().sort().slice(-1)[0] };
+      try{ localStorage.setItem(DB_PREFIX+'years', JSON.stringify(nouveau)); changed = true; }catch(e){}
     }
-    const res = await _getDistantBrut(cleComplete);
-    if(!res.ok) return {ok:false, changed:false};
-    const data = await res.json();
-    if(data && data.donnees !== null && data.donnees !== undefined){
-      const nouveauJson = JSON.stringify(data.donnees);
-      const localBrut = localStorage.getItem(DB_PREFIX+cleComplete);
-      // 2) Sécurité : jamais remplacer des données locales non vides par une collection vide venant du serveur.
-      const vide = v => Array.isArray(v) ? v.length===0 : (v && typeof v==='object' ? Object.keys(v).length===0 : !v);
-      let localVal = null; try{ localVal = localBrut!==null ? JSON.parse(localBrut) : null; }catch(e){}
-      if(vide(data.donnees) && localVal!==null && !vide(localVal)){
-        envoyerCleAuServeur(cleComplete, localVal);
-        return {ok:true, changed:false};
-      }
-      if(localBrut !== nouveauJson){
-        // 3) Fusion fiche par fiche quand les deux versions sont des tableaux de fiches identifiables
-        //    (id/matricule) : la fiche la plus récente l'emporte, au lieu de remplacer toute la collection
-        //    (correction de l'audit 1.2). Si la forme ne s'y prête pas, comportement d'origine inchangé.
-        const fusion = fusionnerCollections(localVal, data.donnees);
-        if(fusion.fusionPossible){
-          const jsonFusionne = JSON.stringify(fusion.resultat);
-          let localAChange = false;
-          if(jsonFusionne !== localBrut){
-            try{ localStorage.setItem(DB_PREFIX+cleComplete, jsonFusionne); }
-            catch(e){ toast("⚠ Espace de stockage plein : les données reçues du serveur n'ont pas pu être enregistrées sur cet appareil.", true); return {ok:false, changed:false}; }
-            localAChange = true;
-          }
-          // La fusion peut différer de ce que le serveur avait : on la lui renvoie pour que les autres
-          // appareils en profitent aussi (fusion bidirectionnelle plutôt qu'un simple dernier-écrit-gagne).
-          if(jsonFusionne !== nouveauJson) envoyerCleAuServeur(cleComplete, fusion.resultat);
-          return {ok:true, changed:localAChange};
-        }
-        try{ localStorage.setItem(DB_PREFIX+cleComplete, nouveauJson); }
-        catch(e){ toast("⚠ Espace de stockage plein : les données reçues du serveur n'ont pas pu être enregistrées sur cet appareil.", true); return {ok:false, changed:false}; }
-        return {ok:true, changed:true};
+    const union = nl.slice().sort();
+    let modifiedTime = entree ? entree.modifiedTime : null;
+    if(union.length && (!entree || JSON.stringify(distante.slice().sort())!==JSON.stringify(union) || (entree.doublons && entree.doublons.length))){
+      const contenu = JSON.stringify({ v:2, cle, donnees:{list:union}, maj:new Date().toISOString() });
+      if(entree){
+        modifiedTime = await driveEcrireFichier(entree.id, contenu);
+        for(const d of (entree.doublons||[])){ try{ await driveSupprimerFichier(d.id); }catch(e){} }
+      } else {
+        const cree = await driveCreerFichier(driveFileName(cle), contenu);
+        modifiedTime = cree.modifiedTime;
       }
     }
-    return {ok:true, changed:false};
-  }catch(e){
-    return {ok:false, changed:false}; // serveur injoignable (réseau coupé, serveur en veille, timeout…)
-  }
+    if(modifiedTime) _vu[cle] = modifiedTime;
+    _vu['years:local'] = sigLocale();
+    return {ok:true, changed};
+  }catch(e){ return {ok:false, changed:false}; }
 }
-/* Liste complète des données de l'application (extraite du fichier réel) — tout est synchronisé,
-   pas seulement les élèves/notes/frais. Clés hors année (parametres/password/years) gérées à part. */
+
+/* ---------- Ensemble des données de l'application ---------- */
+/* Liste des collections connues (extraite du fichier réel) + modules Salaires et Prêts scolaires (v157).
+   Les collections supplémentaires (grilles d'emploi du temps, réglages…) sont en plus repérées automatiquement :
+   toute donnée écrite sur cet appareil, et tout fichier présent sur Drive pour l'année active, est synchronisé. */
 const CLES_SYNCHRONISEES = [
   'activitesHorsCours','actesnomination','apeae','bibliotheque','bureauapeae','cassociaux','comitediscipline',
   'coordonneesgps','coursGeneres','cotisationssociales','courriers','depenses','discipline','dons',
   'dossierspers','eleves','evaluations','fraisscolarite','groupestech','immobilier',
   'informations','livresscolaires','materiel','notes','orientations','personnel','planning',
   'presenceMensuelle','programmeinfo','projets','projetsGeneres','rapports','remarques',
-  'responsablesclasse','responsablesecole','supervision','transferts'
+  'responsablesclasse','responsablesecole','supervision','transferts',
+  'salaires','pretsscolaires','salairesReglagesMensuels'
 ];
-/* Retourne {nouveau, echec} : "echec" est vrai dès qu'au moins un appel au serveur a échoué
-   (réseau coupé, serveur injoignable, etc.), même si d'autres appels ont réussi — le bouton
-   "Synchroniser" s'en sert pour ne jamais afficher "réussi" lors d'une synchronisation partielle. */
-// Verrou anti-chevauchement (audit 1.5) : sur un serveur lent (cold start Render), un cycle peut
-// durer plus de 20 secondes ; sans ce verrou, le cycle automatique suivant démarre par-dessus, avec
-// des requêtes en parallèle qui se gênent. Le filet de sécurité (45 s) libère le verrou même en cas
-// d'anomalie imprévue, pour ne jamais bloquer la synchronisation de façon permanente.
+function _clesLocalesAnnee(year){
+  const suffixe = '__'+year, out = [];
+  for(let i=0; i<localStorage.length; i++){
+    const k = localStorage.key(i);
+    if(k && k.startsWith(DB_PREFIX) && k.endsWith(suffixe)){ const c = k.slice(DB_PREFIX.length); if(cleSynchronisable(c)) out.push(c); }
+  }
+  return out;
+}
+function _clesDistantesInconnues(liste, year, connues){
+  const yS = String(year).replace(/[^a-zA-Z0-9_]/g,'_');
+  const re = new RegExp('^tekoulo__(.+)__'+yS+'\\.json$');
+  const nomsConnus = new Set(); connues.forEach(c=>nomsConnus.add(driveFileName(c)));
+  const out = [];
+  liste.forEach((f, nom)=>{
+    if(nomsConnus.has(nom)) return;
+    const m = re.exec(nom); if(!m || !m[1] || m[1].startsWith('_')) return;
+    const c = m[1]+'__'+year;
+    if(cleSynchronisable(c)) out.push(c);
+  });
+  return out;
+}
+
+/* ---------- Actualisation automatique de l'affichage (fin du « actualisez avec F5 ») ---------- */
+let _rafraichissementDiffere = false, _timerRafraichissement = null;
+function _appAffichee(){ const a = document.getElementById('app'); return !!a && a.style.display!=='none'; }
+function _ecranPretPourRafraichir(){
+  if(!_appAffichee()) return false;
+  if(document.querySelector('form.entity-form.tk-modal-open')) return false;
+  if(typeof TEKOULO_SAISIE_EN_COURS!=='undefined' && TEKOULO_SAISIE_EN_COURS) return false;
+  const a = document.activeElement;
+  if(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest && a.closest('#content')) return false;
+  return true;
+}
+function rafraichirAffichageDepuisDonnees(){
+  try{
+    if(typeof syncBrand==='function') syncBrand();
+    if(typeof renderYearSwitcher==='function') renderYearSwitcher();
+    if(typeof buildNav==='function') buildNav();
+    if(typeof CURRENT_VIEW!=='undefined' && !['guide','biographie'].includes(CURRENT_VIEW) && typeof renderView==='function'){
+      const y = window.scrollY;
+      renderView(CURRENT_VIEW);
+      window.scrollTo(0, y);
+      document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active', el.dataset.key===CURRENT_VIEW));
+    }
+  }catch(e){ try{ console.error('Actualisation automatique impossible :', e); }catch(_e){} }
+}
+function _surveillerRafraichissement(){
+  if(_timerRafraichissement) return;
+  _timerRafraichissement = setInterval(()=>{
+    if(!_rafraichissementDiffere){ clearInterval(_timerRafraichissement); _timerRafraichissement = null; return; }
+    if(_ecranPretPourRafraichir()){
+      _rafraichissementDiffere = false;
+      rafraichirAffichageDepuisDonnees();
+      toast('🔄 Affichage mis à jour avec les nouvelles données reçues.');
+    }
+  }, 3000);
+}
+function notifierDonneesRecues(cles){
+  if(!cles || !cles.length) return;
+  if(!_appAffichee()) return; // écran de connexion : l'affichage lira de toute façon les données à jour
+  if(_ecranPretPourRafraichir()){
+    rafraichirAffichageDepuisDonnees();
+    toast('🔄 Nouvelles données reçues d\u2019un autre appareil — affichage mis à jour.');
+  } else {
+    _rafraichissementDiffere = true;
+    toast('ℹ️ Nouvelles données reçues — l\u2019affichage se mettra à jour dès que la saisie en cours sera terminée ou enregistrée.');
+    _surveillerRafraichissement();
+  }
+}
+function _majIndicateurSync(echec){
+  if(echec) return; // ne masque pas un message d'erreur détaillé
+  const el = document.getElementById('sync-status'); if(!el) return;
+  const heure = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+  const n = getClesEnAttente().length;
+  el.textContent = '✅ Synchronisé à '+heure+(n ? (' · '+n+' modification(s) en attente d\u2019envoi') : '');
+}
+
+/* ---------- Cycle complet de synchronisation ---------- */
 let TEKOULO_SYNC_EN_COURS = false;
 let _syncEnCoursPromise = null; // permet à un clic manuel d'attendre le cycle en cours au lieu d'abandonner
-async function synchroniserAnneeActive(){
-  if(TEKOULO_SYNC_EN_COURS) return _syncEnCoursPromise || {nouveau:false, echec:false, ignore:true};
-  TEKOULO_SYNC_EN_COURS = true;
-  const filetSecurite = setTimeout(()=>{ TEKOULO_SYNC_EN_COURS = false; }, 45000);
-  _syncEnCoursPromise = (async()=>{
-  try{
-    const year = getActiveYear();
-    let nouveau = false;
-    let echec = false;
-    const rp = await tirerDepuisServeur('parametres'); // clé globale, hors année
-    if(rp.changed) nouveau = true;
-    if(!rp.ok) echec = true;
-    if(!year) {
-      if(nouveau) toast('Nouvelles données reçues d\u2019un autre appareil — actualisez la page (F5) pour les afficher.');
-      return {nouveau, echec};
-    }
-    for(const c of CLES_SYNCHRONISEES){
-      const r = await tirerDepuisServeur(c+'__'+year);
-      if(r.changed) nouveau = true;
-      if(!r.ok) echec = true;
-    }
-    if(nouveau) toast('Nouvelles données reçues d\u2019un autre appareil — actualisez la page (F5) pour les afficher.');
-    return {nouveau, echec};
-  } finally {
-    clearTimeout(filetSecurite);
-    TEKOULO_SYNC_EN_COURS = false;
+async function synchroniserAnneeActive(opts){
+  opts = (opts && typeof opts==='object' && typeof opts.type!=='string') ? opts : {};
+  if(TEKOULO_SYNC_EN_COURS){
+    if(opts.force && _syncEnCoursPromise){ try{ await _syncEnCoursPromise; }catch(e){} return synchroniserAnneeActive(opts); }
+    return _syncEnCoursPromise || {nouveau:false, echec:false, ignore:true};
   }
+  TEKOULO_SYNC_EN_COURS = true;
+  const filetSecurite = setTimeout(()=>{ TEKOULO_SYNC_EN_COURS = false; }, 180000);
+  _syncEnCoursPromise = (async()=>{
+    try{
+      if(!googleDriveConnecte || !googleAccessToken) return {nouveau:false, echec:true, changees:[]};
+      let nouveau = false, echec = false;
+      const changees = [];
+      const suivre = (r, cle)=>{ if(r.changed){ nouveau = true; changees.push(cle); } if(!r.ok) echec = true; };
+      let liste = null;
+      try{ liste = await driveListerDossier(); }catch(e){ liste = null; } // sans liste : on retombe sur une recherche fichier par fichier
+      getClesEnAttente().filter(c=>!cleSynchronisable(c)).forEach(retirerEnAttente);
+      suivre(await synchroniserAnnees(liste, opts.force), 'years');
+      suivre(await synchroniserCle('parametres', {liste, force:opts.force}), 'parametres');
+      const year = getActiveYear();
+      if(year){
+        const cles = new Set();
+        CLES_SYNCHRONISEES.forEach(c=>cles.add(c+'__'+year));
+        _clesLocalesAnnee(year).forEach(c=>cles.add(c));
+        getClesEnAttente().forEach(c=>{ if(cleSynchronisable(c)) cles.add(c); });
+        if(liste) _clesDistantesInconnues(liste, year, cles).forEach(c=>cles.add(c));
+        for(const c of cles){ suivre(await synchroniserCle(c, {liste, force:opts.force}), c); }
+      }
+      if(nouveau) notifierDonneesRecues(changees);
+      _majIndicateurSync(echec);
+      return {nouveau, echec, changees};
+    } finally {
+      clearTimeout(filetSecurite);
+      TEKOULO_SYNC_EN_COURS = false;
+    }
   })();
   return _syncEnCoursPromise;
+}
+
+/* ---------- Déclencheurs ---------- */
+let _syncDebounce = null;
+function demanderSynchro(delaiMs){
+  clearTimeout(_syncDebounce);
+  _syncDebounce = setTimeout(async ()=>{
+    if(googleDriveSyncDesactiveeParUtilisateur() || navigator.onLine===false) return;
+    if(!googleDriveConnecte || !googleAccessToken){
+      if(Date.now() - _derniereTentativeSilencieuse < 60000) return;
+      _derniereTentativeSilencieuse = Date.now();
+      if(!(await renouvelerJetonSilencieux())) return;
+    }
+    synchroniserAnneeActive();
+  }, delaiMs||0);
+}
+let _declencheursInstalles = false;
+function installerDeclencheursSync(){
+  if(_declencheursInstalles) return;
+  _declencheursInstalles = true;
+  window.addEventListener('online', ()=>demanderSynchro(500));
+  window.addEventListener('focus', ()=>demanderSynchro(800));
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState==='visible') demanderSynchro(400); else viderEnvoisEnAttente();
+  });
+  window.addEventListener('pagehide', viderEnvoisEnAttente);
+  document.addEventListener('click', _tentativeReconnexionSurGeste, true);
+  document.addEventListener('touchend', _tentativeReconnexionSurGeste, true);
 }
 let _syncAutoIntervalId = null;
 let _majAppIntervalId = null;
 let _syncAutoDemarree = false;
 function demarrerSynchronisationAutomatique(){
+  installerDeclencheursSync();
   if(_syncAutoDemarree) return; // évite les doublons d'intervalles si la fonction est appelée plusieurs fois
   _syncAutoDemarree = true;
   synchroniserAnneeActive();
-  _syncAutoIntervalId = setInterval(synchroniserAnneeActive, 120000); // toutes les 2 minutes (au lieu de 20 s), pour laisser la main aux clics manuels
-  window.addEventListener('online', synchroniserAnneeActive);
+  _syncAutoIntervalId = setInterval(()=>{ if(document.visibilityState!=='hidden') synchroniserAnneeActive(); }, 45000); // toutes les 45 s (1 seule requête légère si rien n'a changé)
   verifierMiseAJourApp(true);
   _majAppIntervalId = setInterval(()=>verifierMiseAJourApp(true), 15*60*1000); // revérifie toutes les 15 minutes
-  window.addEventListener('online', ()=>verifierMiseAJourApp(true));
 }
 function arreterSynchronisationAutomatique(){
   _syncAutoDemarree = false;
@@ -2094,7 +2595,7 @@ function arreterSynchronisationAutomatique(){
 }
 
 // Bouton "Synchroniser" du tableau de bord : premier clic = connexion à Google Drive (fenêtre Google),
-// clics suivants = synchronisation immédiate, sans attendre les 20 secondes automatiques.
+// clics suivants = synchronisation complète immédiate (contrôle de toutes les données, sans attendre le cycle automatique).
 async function synchroniserManuellement(){
   const btn = document.getElementById('sync-manual-btn');
   const statut = document.getElementById('sync-status');
@@ -2106,18 +2607,17 @@ async function synchroniserManuellement(){
   if(btn){ btn.disabled = true; btn.textContent = '🔄 Synchronisation...'; }
   if(statut) statut.textContent = 'Synchronisation en cours...';
   try{
-    const {nouveau, echec, ignore} = await synchroniserAnneeActive();
+    DERNIERE_ERREUR_SYNC = '';
+    const {nouveau, echec} = await synchroniserAnneeActive({force:true});
     const heure = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
     if(statut){
-      if(ignore){
-        statut.textContent = 'Une synchronisation était déjà en cours — patientez quelques secondes puis réessayez. · '+heure;
-      } else if(echec){
-        // Un ou plusieurs modules n'ont pas pu être vérifiés : on ne dit jamais "réussi" dans ce cas,
-        // même si d'autres modules ont bien été synchronisés, pour ne pas donner une fausse assurance.
-        statut.innerHTML = '⛔ Échec — Google Drive n\u2019a pas répondu. Vos données restent en sécurité en local ; réessayez dans 1 à 2 minutes. · '+heure
+      if(echec){
+        // Un ou plusieurs modules n'ont pas pu être vérifiés : on ne dit jamais "réussi" dans ce cas.
+        const n = getClesEnAttente().length;
+        statut.innerHTML = '⛔ Échec — Google Drive n\u2019a pas répondu. Vos données restent en sécurité en local'+(n?(' ('+n+' modification(s) seront envoyées automatiquement)'):'')+' ; réessayez dans 1 à 2 minutes. · '+heure
           + (DERNIERE_ERREUR_SYNC ? ('<br><span style="font-size:10px;opacity:.85;">Détail : '+DERNIERE_ERREUR_SYNC.replace(/</g,'&lt;')+'</span>') : '');
       } else {
-        statut.textContent = '✅ Réussi à '+heure+(nouveau ? ' — nouvelles données reçues, actualisez (F5) pour les afficher.' : ' — tout est à jour.');
+        statut.textContent = '✅ Réussi à '+heure+(nouveau ? ' — nouvelles données reçues et affichées.' : ' — tout est à jour.');
       }
     }
   }catch(e){
@@ -2173,6 +2673,7 @@ function promptAddYear(){
   yd.list.push(clean);
   yd.active = clean;
   localStorage.setItem(DB_PREFIX+'years', JSON.stringify(yd));
+  try{ demanderSynchro(600); }catch(e){} // partage la nouvelle année avec les autres appareils
   toast('Nouvelle année scolaire « '+clean+' » créée. Toutes les nouvelles données seront enregistrées séparément sous cette année.');
   renderYearSwitcher();
   buildNav();
@@ -4425,6 +4926,7 @@ function renderGuide(container){
       <a href="#g13n">13. Tableau de bord et pages de l'établissement</a>
       <a href="#g14n">14. Emplois du temps</a>
       <a href="#g15n">15. Frais de scolarité et reçus</a>
+      <a href="#g15b">15 bis. Salaires (établissements privés)</a>
       <a href="#g16n">16. Dictionnaire, présence et supervision</a>
       <a href="#g17">17. Fermeture de l'application</a>
       <a href="#g17b">17 bis. Installer, désinstaller et transférer l'application</a>
@@ -4611,6 +5113,7 @@ function renderGuide(container){
       <h2>7. Recherche et filtres</h2>
       <h3>7.1 La barre de recherche</h3>
       <p>Dans les modules contenant une longue liste, une barre de recherche est disponible en haut du tableau, reconnaissable à son accent orange sur le bord gauche. La recherche filtre les résultats instantanément à chaque caractère saisi.</p>
+      <p>Dans les tableaux larges, toutes les colonnes défilent normalement avec le reste du tableau : aucune colonne n'est figée à gauche. Seuls les titres de colonnes restent visibles en haut pendant le défilement vertical.</p>
       <h3>7.2 Les filtres et onglets</h3>
       <p>Certains modules proposent des onglets (« pastilles ») permettant de filtrer les enregistrements par catégorie. Cliquez sur l'onglet souhaité pour affiner l'affichage.</p>
       <h3>7.3 Les listes déroulantes de tri</h3>
@@ -4779,6 +5282,8 @@ function renderGuide(container){
         <li>L'application fonctionne entièrement hors connexion pour la saisie : rien n'est perdu, tout reste enregistré sur l'appareil.</li>
         <li>Tant que Google Drive n'est pas connecté (ou hors réseau), les modifications restent « en attente » et se synchronisent automatiquement dès que la connexion à Google Drive est rétablie.</li>
         <li>Sans réseau prolongé, le travail reste possible sur l'appareil utilisé, mais les autres appareils ne verront les changements qu'au retour de la connexion et d'une synchronisation.</li>
+        <li>La liste des modifications en attente est conservée sur l'appareil, même si l'application ou le navigateur est fermé entre-temps : elle repart d'elle-même à la prochaine connexion à Google Drive. Si des modifications sont en attente, le tableau de bord l'indique (« n modification(s) en attente d'envoi »).</li>
+        <li>Si l'application est ouverte sans réseau puis que la connexion revient, la reconnexion à Google Drive et la synchronisation se relancent seules ; sur téléphone, si le navigateur bloque cette reconnexion silencieuse, un simple toucher de l'écran suffit.</li>
       </ul>
 
       <h3>10 bis.4 Sauvegarde des données</h3>
@@ -4786,19 +5291,28 @@ function renderGuide(container){
 
       <h3>10 bis.5 Synchronisation automatique et manuelle</h3>
       <ul>
-        <li><b>Automatique :</b> une fois Google Drive connecté, les données se synchronisent seules en arrière-plan, environ toutes les <b>2 minutes</b>, sans aucune action à faire.</li>
-        <li><b>Manuelle :</b> le bouton « 🔄 Synchroniser » du tableau de bord force une vérification immédiate — il affiche « ✅ Réussi » avec l'heure, ou un message d'échec expliquant la cause (voir 10 bis.10). Si un cycle automatique est déjà en train de tourner au moment du clic, le bouton attend simplement qu'il se termine puis affiche son résultat — inutile de cliquer plusieurs fois.</li>
+        <li><b>Automatique :</b> une fois Google Drive connecté, les données se synchronisent seules en arrière-plan, environ toutes les <b>45 secondes</b> (et dès que l'application redevient visible ou que la connexion revient), sans aucune action à faire. L'affichage se met à jour tout seul à la réception de nouvelles données : plus besoin d'actualiser (F5).</li>
+        <li><b>Manuelle :</b> le bouton « 🔄 Synchroniser » du tableau de bord force une vérification immédiate — il affiche « ✅ Réussi » avec l'heure, ou un message d'échec expliquant la cause (voir 10 bis.10). Il contrôle <b>toutes</b> les données (et pas seulement celles signalées comme modifiées), y compris les modules Salaires et Prêt scolaire. Si un cycle automatique est déjà en train de tourner au moment du clic, le bouton attend qu'il se termine, puis relance un contrôle complet — inutile de cliquer plusieurs fois.</li>
         <li><b>Hors connexion :</b> les modifications restent en attente et repartent automatiquement dès que la connexion à Google Drive est rétablie.</li>
       </ul>
-      <p>Chaque « collection » de données (élèves, notes, personnel, frais, etc.) est enregistrée comme un fichier JSON séparé dans le dossier Drive partagé. En cas de modification simultanée de la même fiche par deux personnes sur deux appareils différents, la version la plus récente est automatiquement conservée, sans demande de confirmation manuelle pour l'instant.</p>
+      <p>Chaque « collection » de données (élèves, notes, personnel, frais, etc.) est enregistrée comme un fichier JSON séparé dans le dossier Drive partagé. Les fusions se font <b>fiche par fiche</b> : deux personnes qui ajoutent chacune une fiche différente dans le même module (par exemple deux fiches de salaire, deux prêts, deux élèves) les retrouvent toutes les deux, sans doublon. En cas de modification de la <b>même</b> fiche sur deux appareils, la version modifiée en dernier est conservée, sans demande de confirmation. Les modules <b>Salaires</b> et <b>Prêt scolaire</b>, les réglages mensuels de salaires, les grilles d'emploi du temps et la liste des années scolaires sont synchronisés comme tous les autres.</p>
+
+      <h3>10 bis.5 quater Suppressions, doublons et affichage automatique</h3>
+      <ul>
+        <li><b>Suppressions :</b> une fiche supprimée sur un appareil (par exemple une fiche de salaire ou un prêt) est supprimée aussi sur les autres appareils à leur prochaine synchronisation, et ne réapparaît pas. Si quelqu'un modifie cette même fiche <i>après</i> sa suppression ailleurs, la fiche modifiée est conservée. Les suppressions effectuées <b>avant</b> la version 157 de l'application peuvent réapparaître une fois.</li>
+        <li><b>Paiements et prêts sur une même fiche :</b> si deux personnes ajoutent chacune un paiement de scolarité (ou un prêt sur une fiche du personnel) au même moment, les deux sont conservés.</li>
+        <li><b>Doublons :</b> deux fiches strictement identiques créées séparément sur deux appareils sont regroupées automatiquement. Si deux fiches <i>différentes</i> portent le même identifiant (même identifiant d'élève ou même matricule, par exemple), les deux sont conservées et un message vous invite à vérifier et supprimer la fiche en trop.</li>
+        <li><b>Affichage :</b> dès que de nouvelles données arrivent d'un autre appareil (ou d'un autre onglet), l'écran se met à jour tout seul, sans avoir à actualiser (F5). Si vous êtes en train de saisir ou si un formulaire est ouvert, la mise à jour attend que vous ayez enregistré ou fermé, pour ne jamais effacer votre saisie.</li>
+        <li><b>Nouvelle année scolaire :</b> l'année créée sur un appareil apparaît dans le sélecteur des autres appareils ; chaque appareil garde toutefois sa propre année active.</li>
+      </ul>
 
       <h3>10 bis.5 bis Plusieurs personnes connectées en même temps</h3>
       <p>Il n'y a pas de limite au nombre de personnes pouvant être connectées en même temps, chacune sur son propre appareil (téléphone, ordinateur…), avec son propre compte Google autorisé (voir 10 bis.8). Concrètement :</p>
       <ul>
         <li>Chaque personne saisit ses données normalement sur son appareil ; rien ne bloque ni n'attend les autres pendant la saisie.</li>
-        <li>Les données saisies par une personne sont envoyées vers le dossier Drive partagé quelques instants après la saisie, puis redescendent vers les appareils des autres personnes lors de leur prochaine synchronisation (automatique toutes les 2 minutes, ou manuelle via « 🔄 Synchroniser »).</li>
-        <li>Il y a donc toujours un léger délai (de quelques secondes à environ 2 minutes) avant qu'une donnée saisie par une personne n'apparaisse chez les autres — ce n'est pas instantané comme un tableur partagé en ligne.</li>
-        <li>Si deux personnes modifient la <b>même fiche</b> (le même élève, par exemple) à quelques instants d'intervalle sans avoir vu la modification de l'autre, c'est la version enregistrée en dernier sur Drive qui est conservée ; l'autre modification est silencieusement remplacée. Pour l'éviter, mieux vaut répartir les tâches (par exemple : une personne pour les inscriptions, une autre pour les notes) plutôt que de faire modifier la même fiche par plusieurs personnes au même moment.</li>
+        <li>Les données saisies par une personne sont envoyées vers le dossier Drive partagé quelques instants après la saisie, puis redescendent vers les appareils des autres personnes lors de leur prochaine synchronisation (automatique toutes les 45 secondes environ, ou manuelle via « 🔄 Synchroniser »). Les suppressions sont propagées de la même façon.</li>
+        <li>Il y a donc toujours un léger délai (de quelques secondes à environ 1 minute) avant qu'une donnée saisie par une personne n'apparaisse chez les autres — ce n'est pas instantané comme un tableur partagé en ligne.</li>
+        <li>Si deux personnes modifient la <b>même fiche</b> (le même élève, par exemple) à quelques instants d'intervalle sans avoir vu la modification de l'autre, c'est la modification la plus récente qui est conservée ; l'autre est remplacée (en revanche, des fiches <i>différentes</i> ne s'écrasent jamais). Pour l'éviter, mieux vaut répartir les tâches (par exemple : une personne pour les inscriptions, une autre pour les notes) plutôt que de faire modifier la même fiche par plusieurs personnes au même moment.</li>
         <li>Après une saisie importante, il est recommandé d'appuyer sur « 🔄 Synchroniser » avant de fermer l'application, pour s'assurer que la donnée est bien partie vers Drive et ne reste pas seulement « en attente » sur l'appareil.</li>
       </ul>
 
@@ -4835,7 +5349,7 @@ function renderGuide(container){
 
       <h3>10 bis.9 Questions fréquentes</h3>
       <p><b>Le compte Google est-il le même que l'identifiant de connexion à l'application (chapitre 10.7) ?</b> Non, ce sont deux systèmes distincts et indépendants.</p>
-      <p><b>Le bouton « 🔄 Synchroniser » affiche un message d'échec, que faire ?</b> Vérifier la connexion internet de l'appareil, puis réessayer dans une à deux minutes. Si le message indique une session expirée, appuyer de nouveau sur le bouton pour se reconnecter à Google Drive. Le message d'échec affiche aussi une ligne « Détail » avec le code technique exact — utile à transmettre à la personne technique si le problème persiste.</p>
+      <p><b>Le bouton « 🔄 Synchroniser » affiche un message d'échec, que faire ?</b> Vérifier la connexion internet de l'appareil, puis réessayer dans une à deux minutes. Si le message indique une session expirée, toucher l'écran ou appuyer de nouveau sur le bouton pour se reconnecter à Google Drive (la session est normalement renouvelée automatiquement). Le message d'échec affiche aussi une ligne « Détail » avec le code technique exact — utile à transmettre à la personne technique si le problème persiste.</p>
       <p><b>Le dossier Drive reste vide après connexion, que faire ?</b> Vérifier que le compte Google utilisé dans l'application est bien celui à qui le dossier a été partagé (et non un autre compte Google connecté sur le même appareil/navigateur) — voir « Partagés avec moi » dans Google Drive pour confirmer. Il est aussi normal que le dossier reste vide tant qu'aucune donnée n'a encore été saisie ou modifiée depuis la connexion : les fichiers n'apparaissent qu'après une première saisie suivie d'une synchronisation.</p>
       <p><b>Puis-je changer le compte Google de l'école ?</b> Oui, mais cela demande de recréer les autorisations (utilisateurs test, partage du dossier) avec le nouveau compte — à faire uniquement avec l'aide de la personne technique.</p>
       <p><b>Deux personnes peuvent-elles travailler en même temps sans problème ?</b> Oui, voir 10 bis.5 bis : chacune travaille sur son appareil, les données se recroisent automatiquement au fil des synchronisations, avec un léger délai.</p>
@@ -4843,8 +5357,9 @@ function renderGuide(container){
       <h3>10 bis.10 Limites actuelles, honnêtes</h3>
       <ul>
         <li>Tant que l'application reste en phase de test Google (moins de 100 utilisateurs), chaque personne doit être ajoutée manuellement comme « utilisateur test » avant de pouvoir se connecter à Google Drive.</li>
-        <li>La connexion à Google Drive peut expirer après un certain temps (généralement autour d'une heure, parfois plus court en phase de test) ; il suffit alors d'appuyer de nouveau sur « 🔄 Synchroniser » pour se reconnecter.</li>
-        <li>La fusion de conflits se fait par fiche entière (la plus récente gagne), pas encore un écran d'arbitrage champ par champ.</li>
+        <li>La connexion à Google Drive expire après environ une heure ; l'application la renouvelle automatiquement en arrière-plan. Si le navigateur refuse ce renouvellement (fréquent sur téléphone), il suffit de toucher l'écran ou d'appuyer sur « 🔄 Synchroniser ».</li>
+        <li>La fusion de conflits se fait par fiche entière (la plus récente gagne), pas encore un écran d'arbitrage champ par champ. Elle s'appuie sur l'heure de chaque appareil : gardez l'heure automatique activée sur les téléphones et ordinateurs.</li>
+        <li>Les comptes locaux (identifiants et mots de passe de l'application) ne sont volontairement pas envoyés vers Google Drive.</li>
         <li>L'assistant IA intégré (chapitre 10 ter) est indépendant de cette synchronisation Google Drive : il passe par son propre petit serveur relais (Cloudflare Worker), qui doit rester actif pour que l'assistant réponde.</li>
       </ul>
 
@@ -4854,6 +5369,8 @@ function renderGuide(container){
         <li><b>« Accès bloqué : erreur d'autorisation » lors de la connexion Google</b> → le compte Google utilisé n'a pas encore été ajouté comme utilisateur test (10 bis.8), ou le champ d'application Drive n'a pas été correctement configuré côté Google Cloud — contacter la personne technique.</li>
         <li><b>Fenêtre Google qui se ferme toute seule (« popup fermée »)</b> → fermer les autres onglets du navigateur et ne pas changer d'application pendant la connexion, puis réessayer (10 bis.8).</li>
         <li><b>Dossier Drive vide après synchronisation</b> → vérifier qu'on est connecté, dans l'application comme dans Drive, avec le même compte Google (10 bis.9).</li>
+        <li><b>Une donnée saisie sur un appareil n'apparaît pas sur un autre</b> → sur les deux appareils, ouvrir le tableau de bord et appuyer sur « 🔄 Synchroniser » ; vérifier qu'ils utilisent la même année scolaire active et le même compte Google / dossier Drive.</li>
+        <li><b>« Session Google à renouveler »</b> → toucher l'écran, ou appuyer sur « 🔗 Connecter Google Drive » ; les données saisies entre-temps sont conservées et envoyées ensuite.</li>
         <li>Toujours garder une sauvegarde exportée (chapitre 9) en plus de Google Drive.</li>
       </ul>
 
@@ -5046,6 +5563,34 @@ function renderGuide(container){
       </ol>
       <h3>15.3 Imprimer un reçu</h3>
       <p>Chaque ligne de l'historique comporte un bouton <b>« ⎙ Reçu »</b> qui imprime le reçu de ce paiement avec les informations réellement enregistrées (établissement, élève, paiement).</p>
+    </div>
+
+    <div class="guide-chapter" id="g15b">
+      <h2>15 bis. Salaires (établissements privés)</h2>
+      <p>Le module « Salaires » (groupe Comptabilité) n'apparaît qu'en établissement <b>privé</b> (chapitre 10.2) ; il calcule et suit, espace par espace, la paie du personnel enseignant, avec deux modes de calcul selon le cycle actif.</p>
+      <h3>15 bis.1 Deux modes de calcul selon le cycle</h3>
+      <ul>
+        <li><b>Élémentaire et Primaire — salaire de base + primes :</b> choisissez l'agent, le mois et son salaire de base ; les primes actives du cycle (Paramètres → 💰 Primes salariales) et, le cas échéant, la prime de responsabilité de l'agent (postes cochés dans sa fiche Personnel) s'ajoutent automatiquement.</li>
+        <li><b>Collège et Lycée — taux horaire :</b> choisissez, parmi les enseignants détectés automatiquement dans l'emploi du temps de l'espace (identifiés par matricule), celui à payer, le mois et le taux horaire ; l'application génère la fiche et la liste des créneaux hebdomadaires de la matière. Chaque créneau compte 2 h ; un jour qui revient une 5ᵉ fois dans le mois est comptabilisé en heures supplémentaires, au même taux.</li>
+      </ul>
+      <p>Sur une fiche « Calculé » du mode taux horaire, chaque créneau peut être marqué <b>Confirmé</b> (payé normalement), <b>Absent</b> (non payé) ou <b>Justifié</b> (payé uniquement si le Principal/Proviseur a autorisé, pour ce cycle et ce mois, le paiement des absences justifiées — réglage disponible juste au-dessus du formulaire). Les primes salariales du Collège/Lycée ne s'ajoutent, elles aussi, que si le Principal/Proviseur les a activées pour ce mois précis ; la prime de responsabilité, elle, s'applique toujours si l'agent a un poste.</p>
+      <h3>15 bis.2 Retenues et prêts scolaires</h3>
+      <p>Cotisation sociale, fond de garantie et tontine scolaire sont configurés dans Paramètres → 💰 Primes salariales → « Retenues sur salaire », puis cochés au cas par cas sur la fiche Personnel de chaque agent. Un prêt scolaire s'octroie directement depuis la fiche Personnel de l'agent (rubrique « Prêts scolaires ») et se prélève ensuite automatiquement, mois après mois, jusqu'à son remboursement intégral. Un plafond protège toujours l'agent (50 % du salaire brut en Collège/Lycée pour le personnel sans poste de responsabilité, 70 % dans tous les autres cas), et la prime « Transport », si elle existe, n'est jamais entamée par ces retenues.</p>
+      <h3>15 bis.3 Statut d'une fiche : Calculé → Validé → Payé</h3>
+      <ol>
+        <li><b>Calculé :</b> la fiche vient d'être générée ; on peut encore modifier le salaire de base (Élémentaire/Primaire) ou les statuts des créneaux (Collège/Lycée) puis recalculer, ou la supprimer.</li>
+        <li><b>Validé :</b> statut suivant (« ✅ Valider cette fiche ») ; un prêt scolaire éventuel est alors réellement décompté du solde restant de l'agent.</li>
+        <li><b>Payé :</b> renseignez la date et le mode de paiement, puis « 💰 Marquer comme payé ». La <b>référence de paiement individuelle est générée automatiquement</b> (elle apparaît déjà pré-remplie dans le champ « Référence de paiement » ; il est possible de la modifier avant d'enregistrer). Le passage à « Payé » déclenche, si les identifiants sont configurés, l'envoi automatique du bulletin par e-mail et une notification SMS (voir 15 bis.4).</li>
+      </ol>
+      <p>Chaque étape peut être annulée (retour au statut précédent) tant qu'on n'a pas avancé plus loin.</p>
+      <h3>15 bis.4 Bulletin, e-mail et SMS</h3>
+      <p>Le bouton <b>« 🖨️ Imprimer le bulletin »</b> édite le bulletin de salaire A4 de la fiche (avec, une fois payée, sa date, son mode et sa référence de paiement). Le bouton <b>« ✉️ Envoyer par mail »</b> envoie ce même bulletin en pièce jointe PDF à l'adresse e-mail de l'agent (fiche Personnel), si l'établissement est connecté à Google Drive avec l'autorisation d'envoi de mails (chapitre 10 bis) ; sinon, un brouillon d'e-mail pré-rempli s'ouvre à la place. Si les identifiants Orange Developer sont renseignés dans Paramètres, l'agent reçoit en plus un SMS automatique dès que sa fiche passe au statut « Payé ».</p>
+      <h3>15 bis.5 Tableau récapitulatif mensuel (imprimable)</h3>
+      <p>Dans la liste des fiches, choisissez d'abord un <b>mois précis</b> dans le filtre, puis cliquez sur <b>« 🖨️ Tableau récapitulatif mensuel »</b> : un tableau imprimable (une ligne par agent) s'ouvre, avec numéro d'ordre, matricule, prénom et nom, classe(s) tenue(s), charge annuelle et mensuelle, heures enseignées, heures supplémentaires, absences justifiées, taux horaire, montant hors retenue, net à recevoir, date et référence de paiement, et une colonne d'émargement à signer. En Élémentaire/Primaire (salaire de base + primes, sans suivi horaire), les colonnes d'heures sont automatiquement remplacées par le salaire de base et le total des primes.</p>
+      <h3>15 bis.6 Export Excel et rapport de masse salariale</h3>
+      <p>« 📊 Exporter Excel (cet espace) » exporte les fiches actuellement filtrées. Le Fondateur et le Chef d'établissement voient en plus « 📊 Rapport de masse salariale — tous les cycles », qui compare la masse salariale, le déjà-payé et le reste à payer des quatre espaces en un seul classeur.</p>
+      <h3>15 bis.7 Salaire de vacances</h3>
+      <p>Pour les mois hors année scolaire (non cochés au chapitre 10.3), le Fondateur peut autoriser, mois par mois, un « salaire de vacances » ; une fois autorisé, tout agent (y compris ceux ayant déjà une prime de responsabilité, qui se cumule alors) peut y avoir droit via le même formulaire que le salaire habituel.</p>
     </div>
 
     <div class="guide-chapter" id="g16n">
@@ -6815,6 +7360,7 @@ function salaireFiltresHTML(){
       <option value="PAYE" ${SALAIRE_FILTRE.statut==='PAYE'?'selected':''}>Historique — Payé</option>
     </select></div>
     <button type="button" class="btn ghost sm" onclick="salaireExporterXLSX()">📊 Exporter Excel (cet espace)</button>
+    <button type="button" class="btn ghost sm" onclick="salaireImprimerRecapMensuel()">🖨️ Tableau récapitulatif mensuel</button>
   </div>`;
 }
 function salairesListeFiltree(){
@@ -6848,6 +7394,122 @@ function salaireExporterXLSX(){
   const cycleLabel = CYCLES_TEKOULO[TEKOULO_CYCLE_ACTIF]?.label || TEKOULO_CYCLE_ACTIF;
   buildAndDownloadXLSX([{name:'Salaires '+cycleLabel, rows:[header, ...rows]}], 'salaires_'+TEKOULO_CYCLE_ACTIF+'_'+todayISO()+'.xlsx');
   toast('Fiches salaire exportées vers Excel.');
+}
+/* ============================ Tableau récapitulatif mensuel des paiements (imprimable) ============================
+   Un tableau par mois, une ligne par agent, avec la référence de paiement individuelle générée
+   automatiquement (voir salaireGenererReferencePaiement ci-dessus). Les colonnes « horaires »
+   (heures enseignées, absences justifiées en heures, taux horaire…) ne s'appliquent qu'au mode
+   « taux horaire » (Collège/Lycée) : en Élémentaire/Primaire (salaire de base + primes), ces colonnes
+   sont remplacées par leur équivalent monétaire (salaire de base, total primes) — cycle actif oblige,
+   toutes les fiches d'un même tableau partagent le même mode de paiement. */
+function salaireRecapMensuelDonnees(mois, cycle){
+  cycle = cycle || TEKOULO_CYCLE_ACTIF;
+  const personnel = dbGet('personnel', []);
+  return salairesListe().filter(s=>s.cycle===cycle && s.mois===mois)
+    .sort((a,b)=>(a.personnelNom||'').localeCompare(b.personnelNom||'','fr'))
+    .map(s=>{
+      const agent = s.personnelId ? personnel.find(p=>p.__id===s.personnelId) : null;
+      const horaire = s.type==='HORAIRE';
+      const classeTenue = horaire
+        ? ([...new Set((s.creneaux||[]).map(c=>`${c.niveau||''}${c.serie?' '+c.serie:''} ${c.gp||''}`.trim()))].filter(Boolean).join(', ') || '—')
+        : ((agent && agent.fonction) || '—');
+      let chargeMensuelle, chargeAnnuelle;
+      if(horaire){
+        const chargeHebdo = (s.creneaux||[]).length*2; // 2h par créneau hebdomadaire
+        chargeMensuelle = chargeHebdo*4; // × 4 semaines/mois (charge contractuelle, cf. SALAIRE_SEMAINES_PAR_MOIS)
+        chargeAnnuelle = chargeMensuelle*9; // × 9 mois de cours
+      } else {
+        chargeMensuelle = Number(s.salaireBase||0);
+        chargeAnnuelle = chargeMensuelle*9;
+      }
+      return {
+        horaire,
+        matricule: s.personnelMatricule||'—',
+        nom: s.personnelNom||'—',
+        classeTenue,
+        chargeAnnuelle, chargeMensuelle,
+        heuresNormal: horaire ? Number(s.heuresNormales!=null?s.heuresNormales:s.heuresValidees||0) : null,
+        heuresSup: horaire ? Number(s.heuresSupplementaires||0) : null,
+        heuresTotal: horaire ? Number(s.heuresNormales||0)+Number(s.heuresSupplementaires||0) : null,
+        absencesJustifieesH: horaire ? (s.creneaux||[]).filter(c=>c.statut==='JUSTIFIE').length*2 : null,
+        heuresPayees: horaire ? Number(s.heuresValidees||0) : null,
+        tauxHoraire: horaire ? Number(s.tauxHoraire||0) : null,
+        salaireBase: !horaire ? Number(s.salaireBase||0) : null,
+        totalPrimes: !horaire ? Number(s.totalPrimes||0) : null,
+        montantBrut: Number(s.salaireBrut||0),
+        net: Number(s.salaireNet||0),
+        datePaiement: s.datePaiement ? fmtDate(s.datePaiement) : '—',
+        referencePaiement: s.referencePaiement || '',
+      };
+    });
+}
+function salaireRecapMensuelHTML(mois, cycle){
+  cycle = cycle || TEKOULO_CYCLE_ACTIF;
+  const lignes = salaireRecapMensuelDonnees(mois, cycle);
+  const fN = n => Number(n||0).toLocaleString('fr-FR');
+  const horaire = lignes.length ? lignes[0].horaire : (cycle==='COLLEGE'||cycle==='LYCEE');
+  const totalBrut = lignes.reduce((s,l)=>s+l.montantBrut,0);
+  const totalNet = lignes.reduce((s,l)=>s+l.net,0);
+  const enTetes = horaire
+    ? ['N°','Matricule','Prénom(s) et Nom','Classe(s) tenue(s)','Charge annuelle (h)','Charge mensuelle (h)','Heures enseignées (normal)','Heures supplémentaires','Total heures enseignées','Absences justifiées (h)','Total heures payées','Taux horaire (GNF/h)','Montant hors retenue (GNF)','Net à recevoir (GNF)','Date de paiement','Réf. paiement','Émargement']
+    : ['N°','Matricule','Prénom(s) et Nom','Fonction / classe tenue','Charge annuelle (GNF)','Charge mensuelle (GNF)','Salaire de base (GNF)','Total primes (GNF)','Montant hors retenue (GNF)','Net à recevoir (GNF)','Date de paiement','Réf. paiement','Émargement'];
+  const lignesHTML = lignes.map((l,i)=>{
+    const cellsCommunes = `<td>${i+1}</td><td>${esc(l.matricule)}</td><td>${esc(l.nom)}</td><td>${esc(l.classeTenue)}</td>`;
+    if(horaire){
+      return `<tr>${cellsCommunes}
+        <td style="text-align:center;">${fN(l.chargeAnnuelle)}</td>
+        <td style="text-align:center;">${fN(l.chargeMensuelle)}</td>
+        <td style="text-align:center;">${fN(l.heuresNormal)}</td>
+        <td style="text-align:center;">${fN(l.heuresSup)}</td>
+        <td style="text-align:center;">${fN(l.heuresTotal)}</td>
+        <td style="text-align:center;">${fN(l.absencesJustifieesH)}</td>
+        <td style="text-align:center;">${fN(l.heuresPayees)}</td>
+        <td style="text-align:right;">${fN(l.tauxHoraire)}</td>
+        <td style="text-align:right;">${fN(l.montantBrut)}</td>
+        <td style="text-align:right; font-weight:700;">${fN(l.net)}</td>
+        <td style="text-align:center;">${esc(l.datePaiement)}</td>
+        <td style="text-align:center; font-size:10px;">${esc(l.referencePaiement||'—')}</td>
+        <td style="min-width:70px;"></td>
+      </tr>`;
+    }
+    return `<tr>${cellsCommunes}
+      <td style="text-align:right;">${fN(l.chargeAnnuelle)}</td>
+      <td style="text-align:right;">${fN(l.chargeMensuelle)}</td>
+      <td style="text-align:right;">${fN(l.salaireBase)}</td>
+      <td style="text-align:right;">${fN(l.totalPrimes)}</td>
+      <td style="text-align:right;">${fN(l.montantBrut)}</td>
+      <td style="text-align:right; font-weight:700;">${fN(l.net)}</td>
+      <td style="text-align:center;">${esc(l.datePaiement)}</td>
+      <td style="text-align:center; font-size:10px;">${esc(l.referencePaiement||'—')}</td>
+      <td style="min-width:70px;"></td>
+    </tr>`;
+  }).join('');
+  const totalRow = !lignes.length ? '' : (horaire
+    ? `<tr style="font-weight:700; background:#F6F3EA;"><td colspan="12" style="text-align:right;">TOTAL</td><td style="text-align:right;">${fN(totalBrut)}</td><td style="text-align:right;">${fN(totalNet)}</td><td colspan="3"></td></tr>`
+    : `<tr style="font-weight:700; background:#F6F3EA;"><td colspan="8" style="text-align:right;">TOTAL</td><td style="text-align:right;">${fN(totalBrut)}</td><td style="text-align:right;">${fN(totalNet)}</td><td colspan="3"></td></tr>`);
+  return `
+  <p style="font-size:12px; color:var(--ink-soft); margin:0 0 8px;">${lignes.length} fiche(s) salaire — ${esc(mois)} — ${esc(CYCLES_TEKOULO[cycle]?.label||cycle)}${horaire?'':' (salaire de base + primes ; charge annuelle calculée sur 9 mois de cours)'}</p>
+  <div class="table-wrap"><table>
+    <thead><tr>${enTetes.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead>
+    <tbody>${lignesHTML || `<tr><td colspan="${enTetes.length}" style="text-align:center; padding:14px;">Aucune fiche salaire pour ce mois.</td></tr>`}</tbody>
+    ${totalRow ? `<tfoot>${totalRow}</tfoot>` : ''}
+  </table></div>`;
+}
+/* Impression du tableau récapitulatif du mois actuellement sélectionné dans les filtres (SALAIRE_FILTRE.mois) —
+   réutilise la fenêtre d'impression générique de l'application (même en-tête, QR, signature, barre d'actions
+   que tous les autres documents), en mode paysage vu le nombre de colonnes. */
+function salaireImprimerRecapMensuel(){
+  const mois = SALAIRE_FILTRE.mois;
+  if(!mois){ toast("Choisissez d'abord un mois précis dans les filtres ci-dessus pour imprimer le tableau récapitulatif.", true); return; }
+  const cycle = TEKOULO_CYCLE_ACTIF;
+  const cycleLabel = CYCLES_TEKOULO[cycle]?.label || cycle;
+  tekouloDocumentImprimable({
+    titre: 'Tableau récapitulatif des paiements — '+mois,
+    sousTitre: 'Cycle '+cycleLabel+' — Année scolaire '+(getParams().anneeScolaire||''),
+    contenuHTML: salaireRecapMensuelHTML(mois, cycle),
+    qrType: 'RECAP_SALAIRES_MOIS', qrRef: cycle+'-'+mois, qrExtra: cycleLabel,
+    module: 'salaires', paysage: true, extraCss: 'table th, table td{ font-size:10.5px; }'
+  });
 }
 /* Rapport de masse salariale tous cycles confondus — réservé au Fondateur, qui seul voit l'ensemble de
    l'établissement (les autres rôles n'ont accès, via moduleEnabled, qu'au cycle actif). */
@@ -6933,7 +7595,8 @@ function salaireBulletinDocumentHTML(rec){
       <table class="rc-table">
         <tr><td class="lbl">Agent</td><td>${esc(rec.personnelNom)}${rec.personnelMatricule?' ('+esc(rec.personnelMatricule)+')':''}</td></tr>
         <tr><td class="lbl">Mois</td><td>${esc(rec.mois)}</td></tr>
-        ${rec.statut==='PAYE' ? `<tr><td class="lbl">Payé le</td><td>${rec.datePaiement?fmtDate(rec.datePaiement):'—'}${rec.modePaiement?' · '+esc(rec.modePaiement):''}</td></tr>` : ''}
+        ${rec.statut==='PAYE' ? `<tr><td class="lbl">Payé le</td><td>${rec.datePaiement?fmtDate(rec.datePaiement):'—'}${rec.modePaiement?' · '+esc(rec.modePaiement):''}</td></tr>
+        <tr><td class="lbl">Référence de paiement</td><td>${esc(rec.referencePaiement||'—')}</td></tr>` : ''}
       </table>
       <table class="rc-table" style="margin-top:-8px;">
         ${lignes.map(l=>`<tr><td class="lbl">${esc(l[0])}</td><td>${l[1]}</td></tr>`).join('')}
@@ -7201,7 +7864,7 @@ function salaireDetailHTML(s){
     html += `<div class="form-grid" style="margin-top:6px;">
       <div class="field"><label>Date de paiement</label><input type="date" id="salaire-paye-date-${s.__id}" value="${todayISO()}"></div>
       <div class="field"><label>Mode de paiement</label><select id="salaire-paye-mode-${s.__id}"><option value="ESPÈCES">Espèces</option><option value="VIREMENT">Virement bancaire</option><option value="MOBILE MONEY">Mobile money</option></select></div>
-      <div class="field"><label>Référence (optionnel)</label><input type="text" id="salaire-paye-ref-${s.__id}"></div>
+      <div class="field"><label>Référence de paiement (générée automatiquement — modifiable)</label><input type="text" id="salaire-paye-ref-${s.__id}" value="${esc(salaireGenererReferencePaiement(s))}"></div>
     </div>
     <button type="button" class="btn sm" onclick="salaireMarquerPaye('${s.__id}')">💰 Marquer comme payé</button>
     <button type="button" class="btn ghost sm" onclick="salaireChangerStatut('${s.__id}','CALCULE')">↩️ Revenir à « Calculé »</button>`;
@@ -7261,6 +7924,23 @@ function salaireValider(id){
   toast('Fiche salaire validée.');
   salaireRafraichirListe();
 }
+/* ============================ Référence de paiement individuelle — générée automatiquement ============================
+   Format : PAY-<CYCLE(3 lettres)>-<AAAAMM>-<matricule ou 4 derniers caractères de l'identifiant>-<NNN>.
+   NNN est un numéro d'ordre parmi les fiches déjà payées ce mois pour ce cycle, ce qui garantit l'unicité
+   même si deux agents n'ont pas de matricule renseigné. Le champ « Référence » du formulaire de paiement
+   est pré-rempli avec cette valeur (mais reste modifiable : si l'utilisateur la corrige manuellement,
+   c'est sa saisie qui est conservée). */
+function salaireGenererReferencePaiement(rec){
+  const p = getParams();
+  const anneeCivile = moisVersAnneeCivile(rec.mois, p.anneeScolaire);
+  const moisJS = moisNomVersIndexJS(rec.mois);
+  const aaaamm = String(anneeCivile) + String((moisJS!=null?moisJS:0)+1).padStart(2,'0');
+  const cycleCode = String(rec.cycle||'').slice(0,3).toUpperCase();
+  const idCourt = String(rec.personnelMatricule || rec.personnelId || rec.__id || '').replace(/[^A-Za-z0-9]/g,'').slice(-4).toUpperCase() || 'XXXX';
+  const dejaPayees = dbGet('salaires', []).filter(s=>s.cycle===rec.cycle && s.mois===rec.mois && s.statut==='PAYE' && s.__id!==rec.__id).length;
+  const seq = String(dejaPayees+1).padStart(3,'0');
+  return `PAY-${cycleCode}-${aaaamm}-${idCourt}-${seq}`;
+}
 function salaireMarquerPaye(id){
   const dateEl = document.getElementById('salaire-paye-date-'+id);
   const modeEl = document.getElementById('salaire-paye-mode-'+id);
@@ -7272,7 +7952,7 @@ function salaireMarquerPaye(id){
   rec.statut = 'PAYE';
   rec.datePaiement = (dateEl&&dateEl.value) || todayISO();
   rec.modePaiement = (modeEl&&modeEl.value) || '';
-  rec.referencePaiement = (refEl&&refEl.value) || '';
+  rec.referencePaiement = (refEl && refEl.value && refEl.value.trim()) || salaireGenererReferencePaiement(rec);
   dbSet('salaires', items);
   toast('Fiche salaire marquée comme payée.');
   salaireRafraichirListe();
@@ -8481,12 +9161,13 @@ function initialiserProtectionsGlobales(){
   // c'est exactement ce qu'il faut ici pour prévenir un onglet que les données ont changé ailleurs.
   window.addEventListener('storage', function(e){
     if(!e.key || !e.key.startsWith(DB_PREFIX)) return;
-    if(e.key.indexOf('__pending')>=0 || e.key.indexOf('__lastLinkedSyncAt')>=0 || e.key.indexOf('__lastBackupAt')>=0 || e.key.indexOf('login_')>=0) return;
+    if(e.key.indexOf('__pending')>=0 || e.key.indexOf('__tomb')>=0 || e.key.indexOf('__objts')>=0 || e.key.indexOf('__maxts')>=0 || e.key.indexOf('__lastLinkedSyncAt')>=0 || e.key.indexOf('__lastBackupAt')>=0 || e.key.indexOf('login_')>=0) return;
     if(e.newValue === e.oldValue) return;
     if(TEKOULO_SAISIE_EN_COURS){
       toast('⚠ Des données ont été modifiées dans un autre onglet pendant votre saisie ici. Enregistrez rapidement, ou actualisez la page (F5) pour repartir des données à jour, afin de ne pas écraser le travail fait ailleurs.', true);
     } else {
-      toast('ℹ️ Des données ont été mises à jour dans un autre onglet. Rouvrez ce module (ou actualisez la page) pour voir la version à jour.');
+      clearTimeout(window.__tkStorageRefresh);
+      window.__tkStorageRefresh = setTimeout(()=>{ notifierDonneesRecues(['autre-onglet']); }, 700); // affichage actualisé automatiquement, sans F5
     }
   });
 }
@@ -13053,7 +13734,7 @@ function renderCarteScolaire(container){
     const e = CARTE_STATE.eleveId ? eleves.find(x=>x.__id===CARTE_STATE.eleveId) : null;
     const p = getParams();
     container.innerHTML = `
-      <div class="hint-box">Carte scolaire au format <b>recto / verso</b>. Sélectionnez un élève ci-dessous : son N° de table, ses nom et prénoms, sa date et son lieu de naissance, ses parents, son niveau, sa classe (GP) et sa photo sont insérés <b>automatiquement</b> sur le <b>recto</b> à partir de sa fiche du module « Élèves ». Le <b>verso</b> (session, ministère, intitulé de l'examen, centre d'examen) se remplit à partir des réglages « Paramètres → Carte scolaire — verso ». Aucune ressaisie n'est nécessaire.</div>
+      <div class="hint-box">Carte scolaire au format <b>carnet</b> (<b>recto</b> et <b>verso</b> attachés, à découper puis plier au centre). Sélectionnez un élève ci-dessous : son N° de table, ses nom et prénoms, sa date et son lieu de naissance, ses parents, son niveau, sa classe (GP) et sa photo sont insérés <b>automatiquement</b> sur le <b>recto</b> à partir de sa fiche du module « Élèves ». Le <b>verso</b> (session, ministère, intitulé de l'examen, centre d'examen) se remplit à partir des réglages « Paramètres → Carte scolaire — verso ». Aucune ressaisie n'est nécessaire.</div>
       <div class="toolbar">
         <div class="field" style="max-width:420px; margin:0; flex:1;">
           <select onchange="carteScolaireSelect(this.value)" style="width:100%; padding:9px 10px; border:1px solid var(--line-soft); border-radius:8px; font-family:inherit; font-size:13px;">
@@ -13107,9 +13788,16 @@ function fauxQrGridHTML(seed){
 /* CSS partagé entre la carte scolaire et le badge du personnel, réutilisé dans les fenêtres d'impression */
 function idCardSharedCSS(){
   return `
-    .id-pair{display:flex; gap:26px; flex-wrap:wrap; justify-content:center; align-items:flex-start;}
-    .id-face-wrap{display:flex; flex-direction:column; align-items:center; gap:7px;}
+    /* Format carnet : recto (gauche) et verso (droite) attachés, même dimension, pli au centre */
+    .id-pair{display:flex; flex-direction:column; align-items:center; gap:7px; max-width:100%; overflow-x:auto; padding:2px 2px 10px;}
+    .id-tags{display:flex; width:100%;}
+    .id-tags .id-face-tag{flex:1; text-align:center;}
     .id-face-tag{font-size:9.5px; letter-spacing:2px; text-transform:uppercase; color:#5B6259; font-weight:700;}
+    .id-sheet{display:flex; flex-wrap:nowrap; flex-shrink:0; border-radius:13px; box-shadow:none;}
+    .id-sheet .id-card2{box-shadow:inset 0 0 0 3px var(--id-bg1), inset 0 0 0 4px var(--id-border);}
+    .id-sheet .id-card2:first-child{border-radius:13px 0 0 13px; border-right:1px dashed #8A8267;}
+    .id-sheet .id-card2:last-child{border-radius:0 13px 13px 0; border-left:1px solid transparent;}
+    .id-sheet{outline:1px dashed #9A9A8A; outline-offset:5px; margin:6px;}
     .id-card2{
       --id-accent:${printCycleColors().deep}; --id-border:#C9BE96; --id-border-soft:#B7AF92;
       --id-bg1:#FCFAF1; --id-bg2:#F6F1E1; --id-bg3:#F0EAD6; --id-texture:rgba(11,74,50,.035);
@@ -13277,8 +13965,8 @@ function carteScolaireCardHTML(e, p){
   </div>`;
 
   return `<div class="id-pair">
-    <div class="id-face-wrap"><span class="id-face-tag no-print">Recto</span>${recto}</div>
-    <div class="id-face-wrap"><span class="id-face-tag no-print">Verso</span>${verso}</div>
+    <div class="id-tags no-print"><span class="id-face-tag">Recto</span><span class="id-face-tag">Verso</span></div>
+    <div class="id-sheet">${recto}${verso}</div>
   </div>`;
 }
 
@@ -13309,7 +13997,7 @@ function printCarteScolaire(id){
   openCardPrintWindow(
     'Carte scolaire — '+e.prenoms+' '+e.nom,
     cardHTML,
-    "Découpez le recto et le verso suivant leur contour, puis collez-les dos à dos (ou imprimez directement recto/verso sur une même feuille de papier cartonné). Plastifiez ensuite pour une carte durable."
+    "Découpez le carnet le long du contour extérieur (recto et verso sont attachés, de même dimension), puis pliez-le en deux suivant le pointillé central : le recto en couverture, le verso au dos. Imprimez de préférence sur du papier cartonné. Plastifiez ensuite pour une carte durable."
   );
 }
 
@@ -13322,7 +14010,7 @@ function renderBadgePersonnel(container){
     const person = BADGE_STATE.personnelId ? staff.find(x=>x.__id===BADGE_STATE.personnelId) : null;
     const p = getParams();
     container.innerHTML = `
-      <div class="hint-box">Badge du personnel au format <b>recto / verso</b>. Sélectionnez un membre du personnel ci-dessous : sa photo, ses nom et prénoms, sa fonction, son matricule et son téléphone sont insérés <b>automatiquement</b> sur le <b>recto</b> à partir de sa fiche du module « Personnel ». Le <b>verso</b> reprend le nom de l'établissement et la mention « Cachet du Chef d'Établissement ». Aucune ressaisie n'est nécessaire.</div>
+      <div class="hint-box">Badge du personnel au format <b>carnet</b> (<b>recto</b> et <b>verso</b> attachés, à découper puis plier au centre). Sélectionnez un membre du personnel ci-dessous : sa photo, ses nom et prénoms, sa fonction, son matricule et son téléphone sont insérés <b>automatiquement</b> sur le <b>recto</b> à partir de sa fiche du module « Personnel ». Le <b>verso</b> reprend le nom de l'établissement et la mention « Cachet du Chef d'Établissement ». Aucune ressaisie n'est nécessaire.</div>
       <div class="toolbar">
         <div class="field" style="max-width:420px; margin:0; flex:1;">
           <select onchange="badgePersonnelSelect(this.value)" style="width:100%; padding:9px 10px; border:1px solid var(--line-soft); border-radius:8px; font-family:inherit; font-size:13px;">
@@ -13419,8 +14107,8 @@ function badgePersonnelCardHTML(person, p){
   </div>`;
 
   return `<div class="id-pair">
-    <div class="id-face-wrap"><span class="id-face-tag no-print">Recto</span>${recto}</div>
-    <div class="id-face-wrap"><span class="id-face-tag no-print">Verso</span>${verso}</div>
+    <div class="id-tags no-print"><span class="id-face-tag">Recto</span><span class="id-face-tag">Verso</span></div>
+    <div class="id-sheet">${recto}${verso}</div>
   </div>`;
 }
 
@@ -13451,7 +14139,7 @@ function printBadgePersonnel(id){
   openCardPrintWindow(
     'Badge du personnel — '+person.prenoms+' '+person.nom,
     cardHTML,
-    "Découpez le recto et le verso suivant leur contour, puis collez-les dos à dos (ou imprimez directement recto/verso sur une même feuille de papier cartonné). Plastifiez ensuite pour un badge durable."
+    "Découpez le carnet le long du contour extérieur (recto et verso sont attachés, de même dimension), puis pliez-le en deux suivant le pointillé central : le recto en couverture, le verso au dos. Imprimez de préférence sur du papier cartonné. Plastifiez ensuite pour un badge durable."
   );
 }
 
@@ -14328,12 +15016,12 @@ function renderNotes(container){
             <td><b>${esc(e.prenoms)} ${esc(e.nom)}</b><div class="muted" style="font-size:11px;">${esc(e.identifiant||'—')} · ${esc(e.classe||'')}</div></td>
             ${mats.map(m=>{
               const val = (rec.matieres[m.code])||{};
-              return `<td><input type="number" min="0" max="${B}" step="0.25" style="width:52px;" value="${val.cours!==undefined?val.cours:''}" onchange="notesUpdate('${e.__id}','${m.code}','cours',this.value)"></td>
-                      <td><input type="number" min="0" max="${B}" step="0.25" style="width:52px;" value="${val.compo!==undefined?val.compo:''}" onchange="notesUpdate('${e.__id}','${m.code}','compo',this.value)"></td>`;
+              return `<td><input type="number" min="0" max="${B}" step="0.25" style="width:52px;" value="${val.cours!==undefined?val.cours:''}" onchange="notesUpdate('${e.__id}','${m.code}','cours',this.value,this)"></td>
+                      <td><input type="number" min="0" max="${B}" step="0.25" style="width:52px;" value="${val.compo!==undefined?val.compo:''}" onchange="notesUpdate('${e.__id}','${m.code}','compo',this.value,this)"></td>`;
             }).join('')}
-            <td><b>${moy!==null?moy.toFixed(2):'—'}</b></td>
-            <td><span class="badge ${mentionBadgeClass(moy)}">${mention(moy)}</span></td>
-            <td>${computeRang(eleves, e.__id)}</td>
+            <td class="n-moy"><b>${moy!==null?moy.toFixed(2):'—'}</b></td>
+            <td class="n-mention"><span class="badge ${mentionBadgeClass(moy)}">${mention(moy)}</span></td>
+            <td class="n-rang">${computeRang(eleves, e.__id)}</td>
             <td><button class="icon-btn" onclick="notesOpenBulletin('${e.__id}')">📄 Bulletin</button></td>
           </tr>`;
         }).join('')}
@@ -14341,8 +15029,24 @@ function renderNotes(container){
     </table></div>`;
   }
 
+  /* Met à jour uniquement les cellules calculées (moyenne, mention, rang) SANS redessiner le tableau :
+     la position de défilement et le curseur (case suivante) ne bougent donc plus pendant la saisie. */
+  function refreshCalculs(){
+    const eleves = niveauEleves();
+    eleves.forEach(e=>{
+      const row = container.querySelector('#note-row-'+CSS.escape(e.__id));
+      if(!row) return;
+      const moy = moyenneGenerale(getNoteRec(e.__id, NOTES_STATE.semestre));
+      const cm = row.querySelector('.n-moy'); if(cm) cm.innerHTML = '<b>'+(moy!==null?moy.toFixed(2):'—')+'</b>';
+      const ce = row.querySelector('.n-mention'); if(ce) ce.innerHTML = '<span class="badge '+mentionBadgeClass(moy)+'">'+mention(moy)+'</span>';
+      const cr = row.querySelector('.n-rang'); if(cr) cr.textContent = computeRang(eleves, e.__id);
+    });
+    const z = container.querySelector('#bulletin-zone'); if(z) z.innerHTML = ''; // bulletin/classement affichés deviendraient obsolètes
+  }
+
   paint();
   window.__notesRepaint = paint;
+  window.__notesRefresh = refreshCalculs;
 }
 function computeRang(eleves, eleveId){
   const semestre = NOTES_STATE.semestre;
@@ -14488,14 +15192,15 @@ function notesPrintTable(){
     </body></html>`);
   w.document.close();
 }
-function notesUpdate(eleveId, matiereCode, field, value){
+function notesUpdate(eleveId, matiereCode, field, value, inputEl){
   const rec = getNoteRec(eleveId, NOTES_STATE.semestre);
   rec.matieres = rec.matieres || {};
   rec.matieres[matiereCode] = rec.matieres[matiereCode] || {};
   const v = value===''? '' : Math.max(0, Math.min(baremeCtx(), parseFloat(value)));
   rec.matieres[matiereCode][field] = value===''? '' : v;
   saveNoteRec(rec);
-  window.__notesRepaint && window.__notesRepaint();
+  if(inputEl && value!=='' && String(v)!==String(inputEl.value)) inputEl.value = v; // valeur ramenée dans le barème
+  if(window.__notesRefresh) window.__notesRefresh(); else window.__notesRepaint && window.__notesRepaint();
 }
 function notesSelectStudent(eleveId){
   NOTES_STATE.selectedEleveId = eleveId;
@@ -17053,7 +17758,9 @@ function figerCategorieColonne(txt){
 /* Analyse un tableau une seule fois (marqueur data-fige-analyse) : détermine quelles colonnes
    figer et pose les classes correspondantes. Ne fige rien si le tableau a moins de deux colonnes
    d'identification (évite de figer, par exemple, une simple colonne « Nom » isolée et sans rapport). */
+const FIGER_COLONNES_ACTIF = false; // v158 : colonnes des tableaux débloquées (mettre true pour refiger)
 function figerDetecterTableau(table){
+  if(!FIGER_COLONNES_ACTIF) return;
   if(table.dataset.figeAnalyse) return;
   table.dataset.figeAnalyse = '1';
   try{
@@ -17085,6 +17792,10 @@ function figerDetecterTableau(table){
    car la largeur des colonnes dépend du contenu et varie d'un tableau et d'une donnée à l'autre. */
 function figerRecalculerPositions(root){
   const scope = root || document;
+  if(!FIGER_COLONNES_ACTIF){
+    scope.querySelectorAll('.col-frozen').forEach(c=>{ c.classList.remove('col-frozen','col-frozen-last'); c.style.left=''; });
+    return;
+  }
   scope.querySelectorAll('table').forEach(table=>{
     try{
       figerDetecterTableau(table);
