@@ -1907,7 +1907,7 @@ const SYNC_BACKEND_ACTIF = true; // un backend de synchronisation (Google Drive)
    connecté) et de le SIGNALER clairement, avec un lien de téléchargement en un clic — voir le
    guide « Procédure de mise à jour » pour la marche à suivre lors de la publication d'une version.
    VERSION_APP doit être incrémenté à chaque nouvelle version envoyée sur Drive. */
-const VERSION_APP = 158;
+const VERSION_APP = 159;
 const VERSION_APP_DATE = '2026-09-28';
 const FICHIER_VERSION_APP = 'tekoulo__app_version.json';
 let MAJ_APP_DISPONIBLE = null; // {version, url, date, notes} une fois qu'une version plus récente est détectée
@@ -2424,7 +2424,7 @@ async function synchroniserAnnees(liste, force){
 const CLES_SYNCHRONISEES = [
   'activitesHorsCours','actesnomination','apeae','bibliotheque','bureauapeae','cassociaux','comitediscipline',
   'coordonneesgps','coursGeneres','cotisationssociales','courriers','depenses','discipline','dons',
-  'dossierspers','eleves','evaluations','fraisscolarite','groupestech','immobilier',
+  'dossierspers','mutations','eleves','evaluations','fraisscolarite','groupestech','immobilier',
   'informations','livresscolaires','materiel','notes','orientations','personnel','planning',
   'presenceMensuelle','programmeinfo','projets','projetsGeneres','rapports','remarques',
   'responsablesclasse','responsablesecole','supervision','transferts',
@@ -4650,6 +4650,14 @@ function exportAllCSV(){
 function defaultFraisTranches(){
   return [{label:'1ère tranche', nbMois:6},{label:'2ème tranche', nbMois:'RESTE'}];
 }
+/* Nombre de GP (Groupes Pédagogiques) par niveau — paramétrable dans Paramètres → Cycles & barème,
+   car ce nombre varie d'une année scolaire à l'autre (voir figerParametresAnnees et getParams ci-dessous,
+   même principe que les tarifs de scolarité). Par défaut : 4 GP (A1 à A4) par niveau, comme avant. */
+function defaultGpParNiveau(){
+  const out = {};
+  Object.values(CYCLES_TEKOULO).forEach(c => c.niveaux.forEach(n => { out[n] = 4; }));
+  return out;
+}
 function defaultFraisParCycle(){
   const out = {};
   Object.keys(CYCLES_TEKOULO).forEach(c=>{
@@ -4663,13 +4671,16 @@ function figerParametresAnnees(p){
   const yd = getYearsData(); if(!yd || !yd.list) return;
   const brut = dbGet('parametres', {});
   const ffp = {...(brut.fraisParCycleParAnnee||{})}, mp = {...(brut.moisParAnnee||{})};
+  const gpp = {...(brut.gpParNiveauParAnnee||{})};
   const legF = {...defaultFraisParCycle(), ...(brut.fraisParCycle||{})};
   const legM = (brut.moisAnneeScolaire && brut.moisAnneeScolaire.length) ? brut.moisAnneeScolaire : ['Octobre','Novembre','Décembre','Janvier','Février','Mars','Avril','Mai'];
+  const legGP = {...defaultGpParNiveau(), ...(brut.gpParNiveau||{})};
   yd.list.forEach(y=>{
     if(!ffp[y]) ffp[y] = JSON.parse(JSON.stringify(legF));
     if(!mp[y]) mp[y] = legM.slice();
+    if(!gpp[y]) gpp[y] = {...legGP};
   });
-  p.fraisParCycleParAnnee = ffp; p.moisParAnnee = mp;
+  p.fraisParCycleParAnnee = ffp; p.moisParAnnee = mp; p.gpParNiveauParAnnee = gpp;
 }
 function getParams(){
   const defaults = {
@@ -4709,6 +4720,7 @@ function getParams(){
     mentionExamen: 'ENSEIGNEMENT GÉNÉRAL',
     moisAnneeScolaire: ['Octobre','Novembre','Décembre','Janvier','Février','Mars','Avril','Mai'],
     fraisParCycle: defaultFraisParCycle(),
+    gpParNiveau: defaultGpParNiveau(), // Nombre de GP (A1, A2…) par niveau — varie par année scolaire, voir plus bas
     primesSalariales: [], // Module Salaires (établissements privés) : liste des primes configurables — {id, nom, type:'FIXE'|'POURCENTAGE', valeur, cycle, statut}
     primesResponsabilite: {}, // E5 : montant mensuel (GNF) par poste de responsabilité — {DIRECTEUR:0, PRINCIPAL:0, ...}
   };
@@ -4718,13 +4730,15 @@ function getParams(){
   // Chaque année scolaire garde ses propres tarifs et mois (voir figerParametresAnnees) : modifier les tarifs
   // d'une année ne recalcule plus les soldes des années archivées. Sans copie propre, on utilise la valeur générale.
   const ay = getActiveYear();
-  let fraisSrc = stored.fraisParCycle || {}, moisSrc = stored.moisAnneeScolaire;
+  let fraisSrc = stored.fraisParCycle || {}, moisSrc = stored.moisAnneeScolaire, gpSrc = stored.gpParNiveau || {};
   if(ay){
     if(stored.fraisParCycleParAnnee && stored.fraisParCycleParAnnee[ay]) fraisSrc = stored.fraisParCycleParAnnee[ay];
     if(stored.moisParAnnee && stored.moisParAnnee[ay]) moisSrc = stored.moisParAnnee[ay];
+    if(stored.gpParNiveauParAnnee && stored.gpParNiveauParAnnee[ay]) gpSrc = stored.gpParNiveauParAnnee[ay];
   }
   const fraisParCycle = {...defaults.fraisParCycle, ...fraisSrc};
-  const out = {...defaults, ...stored, fraisParCycle};
+  const gpParNiveau = {...defaults.gpParNiveau, ...gpSrc};
+  const out = {...defaults, ...stored, fraisParCycle, gpParNiveau};
   if(moisSrc) out.moisAnneeScolaire = moisSrc;
   if(ay) out.anneeScolaire = ay;   // l'année affichée sur les documents = l'année scolaire active (sélecteur latéral)
   return out;
@@ -5463,7 +5477,7 @@ function renderGuide(container){
         <li><b>12ème année et Terminale :</b> trois options — Sciences Expérimentales (SE), Sciences Sociales (SS) et Sciences Mathématiques (SM).</li>
       </ul>
       <h3>11.3 Les GP (Groupes Pédagogiques)</h3>
-      <p>Chaque niveau compte <b>4 GP : A1, A2, A3 et A4</b>. Au Lycée, ce sont la série ou l'option qui comptent 4 GP : chaque série (11ème) ou option (12ème, Terminale) a ses propres GP A1 à A4. La classe d'un élève s'écrit donc « 7EME A1 » hors Lycée, et « 12EME SE A1 » au Lycée (niveau + série/option + GP).</p>
+      <p>Par défaut, chaque niveau compte <b>4 GP : A1, A2, A3 et A4</b> — mais ce nombre se règle niveau par niveau dans <b>Paramètres → Cycles &amp; barème → GP par niveau</b>, et peut varier d'une année scolaire à l'autre (ex. 2 GP une année, 5 l'année suivante). Au Lycée, ce sont la série ou l'option qui comptent ce nombre de GP : chaque série (11ème) ou option (12ème, Terminale) a ses propres GP A1, A2… La classe d'un élève s'écrit donc « 7EME A1 » hors Lycée, et « 12EME SE A1 » au Lycée (niveau + série/option + GP).</p>
       <ul>
         <li>Dans la fiche d'un élève, on choisit le niveau, puis la classe (GP) parmi la liste des classes de l'espace. Au Lycée, le champ « Série » (11ème) ou « Option » (12ème, Terminale) est aligné automatiquement sur la classe choisie.</li>
         <li>Les statistiques d'effectifs, le bilan annuel et les emplois du temps utilisent cette organisation.</li>
@@ -6154,7 +6168,11 @@ function renderParametres(container){
       <div class="section-title"><h3><span class="bar"></span>Comptes de connexion par rôle</h3></div>
       <div class="hint-box">Créez ici un compte de connexion personnel (identifiant + mot de passe). Les <b>fonctions proposées changent selon l'espace choisi</b> : Élémentaire et Primaire (Directeur, Directeur adjoint, Comptable, Surveillant général, Enseignant, Fondateur), Collège (Principal, Directeur des études, Comptable, Conseiller à l'orientation, Surveillant général, Professeur collège, Fondateur), Lycée (Proviseur, Censeur, Comptable, Chargé à l'orientation, Surveillant, Professeur lycée, Fondateur). Chaque personne se connecte alors avec son propre identifiant, et ne voit dans le menu que les modules correspondant à son rôle — plutôt que de partager le mot de passe administrateur unique.</div>
       <div class="guide-callout attention" style="margin-bottom:14px;"><b class="gc-label">⚠️ Ces comptes ne synchronisent pas à eux seuls entre appareils</b>Un compte créé ici (stocké uniquement sur cet appareil) permet de se connecter et de restreindre l'accès aux modules, mais ne synchronise rien par lui-même. Pour qu'une personne profite à la fois de son propre identifiant <b>et</b> de la synchronisation multi-appareils, elle doit en plus se connecter avec son propre compte Google via « 🔗 Connecter Google Drive » sur le tableau de bord (chapitre 10 bis) — ce compte Google doit avoir été autorisé au préalable par le Fondateur.</div>
-      <form class="entity-form" id="form-compte-role" onsubmit="return false;">
+      <div class="toolbar" style="margin-bottom:14px;">
+        <button type="button" class="btn" onclick="compteRoleOpenNew()">➕ Nouveau compte de connexion</button>
+      </div>
+      <form class="entity-form tk-modal-form" id="form-compte-role" onsubmit="return false;">
+        <h4>Créer / modifier un compte</h4>
         <div class="form-grid">
           <div class="field"><label>Espace (cycle) autorisé</label>
             <select id="compte-role-cycle" onchange="compteRoleCycleChanged()"><option value="">Tous les espaces</option>${Object.entries(CYCLES_TEKOULO).map(([k,v])=>`<option value="${esc(k)}">${esc(v.label)} uniquement</option>`).join('')}</select>
@@ -6287,7 +6305,9 @@ function primeSalarialeListeHTML(){
 }
 function primeSalarialeFormHTML(){
   return `
-  <form class="entity-form" id="form-prime-salariale" onsubmit="return false;">
+  <div class="toolbar" style="margin-bottom:14px;"><button type="button" class="btn" onclick="paramNewPrimeSalariale()">➕ Nouvelle prime</button></div>
+  <form class="entity-form tk-modal-form" id="form-prime-salariale" onsubmit="return false;">
+    <h4>Créer / modifier une prime</h4>
     <div class="form-grid">
       <div class="field"><label>Nom de la prime</label><input id="prime-nom" type="text" placeholder="ex : Prime d'ancienneté"></div>
       <div class="field"><label>Type</label>
@@ -6350,6 +6370,16 @@ function paramSavePrimeSalariale(){
   primeSalarialeTypeChanged();
   document.getElementById('primes-salariales-liste').innerHTML = primeSalarialeListeHTML();
   toast(editId ? 'Prime mise à jour.' : 'Prime créée.');
+  fermerFormulaireModal();
+}
+function paramNewPrimeSalariale(){
+  const form = document.getElementById('form-prime-salariale');
+  if(!form) return;
+  delete form.dataset.editId;
+  form.reset();
+  primeSalarialeTypeChanged();
+  document.getElementById('prime-cancel-btn').style.display = 'none';
+  ouvrirFormulaireModal(form);
 }
 function paramEditPrimeSalariale(id){
   const pr = primesSalarialesListe().find(x=>x.id===id);
@@ -6362,7 +6392,7 @@ function paramEditPrimeSalariale(id){
   document.getElementById('prime-statut').value = pr.statut;
   document.getElementById('form-prime-salariale').dataset.editId = id;
   document.getElementById('prime-cancel-btn').style.display = '';
-  document.getElementById('prime-nom').scrollIntoView({behavior:'smooth', block:'center'});
+  ouvrirFormulaireModal(document.getElementById('form-prime-salariale'));
   toast('Modifiez les champs puis cliquez sur « Créer / mettre à jour cette prime ».');
 }
 function paramAnnulerEditionPrime(){
@@ -6373,6 +6403,7 @@ function paramAnnulerEditionPrime(){
   primeSalarialeTypeChanged();
   const btn = document.getElementById('prime-cancel-btn');
   if(btn) btn.style.display = 'none';
+  fermerFormulaireModal();
 }
 function paramTogglePrimeSalariale(id){
   if(!estFondateurActuel()){ toast('Accès refusé : seul le Fondateur peut modifier les primes salariales.', true); return; }
@@ -6440,7 +6471,9 @@ function retenueSalarialeFormHTML(){
   return `
   <div class="section-title" style="margin-top:18px;"><h3><span class="bar"></span>Retenues sur salaire</h3></div>
   <div class="hint-box">Prélevées chaque mois sur le salaire (après primes) de chaque espace. La <b>cotisation sociale</b> s'applique automatiquement à tous les agents ; le <b>fond de garantie</b> et la <b>tontine scolaire</b> sont facultatifs et ne s'appliquent qu'aux agents cochés dans leur fiche Personnel. Le <b>prêt scolaire</b> se gère directement sur la fiche de chaque agent, pas ici.</div>
-  <form class="entity-form" id="form-retenue-salariale" onsubmit="return false;">
+  <div class="toolbar" style="margin-bottom:14px;"><button type="button" class="btn" onclick="paramNewRetenueSalariale()">➕ Nouvelle retenue</button></div>
+  <form class="entity-form tk-modal-form" id="form-retenue-salariale" onsubmit="return false;">
+    <h4>Créer / modifier une retenue</h4>
     <div class="form-grid">
       <div class="field"><label>Catégorie</label>
         <select id="retenue-categorie">
@@ -6506,6 +6539,16 @@ function paramSaveRetenueSalariale(){
   retenueSalarialeTypeChanged();
   document.getElementById('retenues-salariales-liste').innerHTML = retenueSalarialeListeHTML();
   toast(editId ? 'Retenue mise à jour.' : 'Retenue créée.');
+  fermerFormulaireModal();
+}
+function paramNewRetenueSalariale(){
+  const form = document.getElementById('form-retenue-salariale');
+  if(!form) return;
+  delete form.dataset.editId;
+  form.reset();
+  retenueSalarialeTypeChanged();
+  document.getElementById('retenue-cancel-btn').style.display = 'none';
+  ouvrirFormulaireModal(form);
 }
 function paramEditRetenueSalariale(id){
   const r = retenuesSalarialesListe().find(x=>x.id===id);
@@ -6518,7 +6561,7 @@ function paramEditRetenueSalariale(id){
   document.getElementById('retenue-statut').value = r.statut;
   document.getElementById('form-retenue-salariale').dataset.editId = id;
   document.getElementById('retenue-cancel-btn').style.display = '';
-  document.getElementById('retenue-categorie').scrollIntoView({behavior:'smooth', block:'center'});
+  ouvrirFormulaireModal(document.getElementById('form-retenue-salariale'));
   toast('Modifiez les champs puis cliquez sur « Créer / mettre à jour cette retenue ».');
 }
 function paramAnnulerEditionRetenue(){
@@ -6529,6 +6572,7 @@ function paramAnnulerEditionRetenue(){
   retenueSalarialeTypeChanged();
   const btn = document.getElementById('retenue-cancel-btn');
   if(btn) btn.style.display = 'none';
+  fermerFormulaireModal();
 }
 function paramToggleRetenueSalariale(id){
   if(!estFondateurActuel()){ toast('Accès refusé : seul le Fondateur peut modifier les retenues salariales.', true); return; }
@@ -6642,6 +6686,18 @@ function paramSaveCompteRole(){
   document.getElementById('compte-role-cycle').value='';
   toast('Compte « '+roleLabel(role)+' » enregistré.');
   renderComptesRoleListe();
+  fermerFormulaireModal();
+}
+function compteRoleOpenNew(){
+  const form = document.getElementById('form-compte-role');
+  if(!form) return;
+  delete form.dataset.editId;
+  document.getElementById('compte-role-nom').value='';
+  document.getElementById('compte-role-identifiant').value='';
+  document.getElementById('compte-role-motdepasse').value='';
+  document.getElementById('compte-role-cycle').value='';
+  compteRoleCycleChanged();
+  ouvrirFormulaireModal(form);
 }
 function paramEditCompteRole(id){
   const c = getComptesLocaux().find(x=>x.id===id);
@@ -6654,7 +6710,7 @@ function paramEditCompteRole(id){
   document.getElementById('compte-role-identifiant').value = c.identifiant;
   document.getElementById('compte-role-motdepasse').value = '';
   document.getElementById('form-compte-role').dataset.editId = id;
-  document.getElementById('compte-role-identifiant').scrollIntoView({behavior:'smooth', block:'center'});
+  ouvrirFormulaireModal(document.getElementById('form-compte-role'));
   toast('Modifiez les champs puis cliquez sur « Créer / mettre à jour ce compte ».');
 }
 function paramDeleteCompteRole(id){
@@ -6746,11 +6802,30 @@ function paramCyclesBaremeHTML(p){
         ${CYCLES_TEKOULO[k].niveaux.map(n=>`<label style="display:flex; flex-direction:column; font-size:11.5px; color:var(--ink-soft);">${niveauLabel(n)}<select data-bareme-niveau="${esc(n)}" style="min-width:95px;" disabled>${optBareme(baremeDuNiveau(n))}</select></label>`).join('')}
       </div>
     </div>`).join('');
+  const anneeActive = p.anneeScolaire || getActiveYear() || '';
+  const gpHTML = cycles.map(k=>`
+    <div class="field span-2">
+      <label>${CYCLES_TEKOULO[k].label}</label>
+      <div style="display:flex; flex-wrap:wrap; gap:14px;">
+        ${CYCLES_TEKOULO[k].niveaux.map(n=>`<label style="display:flex; flex-direction:column; font-size:11.5px; color:var(--ink-soft); gap:4px;">${niveauLabel(n)}
+          <input type="number" min="1" max="12" step="1" data-gp-niveau="${esc(n)}" value="${esc(p.gpParNiveau[n]||4)}" style="width:74px; padding:7px 9px; border:1px solid var(--line-soft); border-radius:8px; font-family:inherit; font-size:13px;">
+        </label>`).join('')}
+      </div>
+    </div>`).join('');
   return `
     <div class="section-title"><h3><span class="bar"></span>Cycles et niveaux</h3></div>
     <div class="hint-box">Le cycle et le niveau d'un élève sont choisis dans le module « Élèves ». Au Lycée, la série (ou option) se choisit dans la fiche de l'élève.</div>
     ${migration}
     <div class="entity-form" style="padding:14px 16px;">${niveauxHTML}</div>
+
+    <div class="section-title"><h3><span class="bar"></span>GP (Groupes Pédagogiques) par niveau</h3></div>
+    <div class="hint-box">Nombre de GP (A1, A2…) proposés pour chaque niveau — au Lycée, ce nombre s'applique à chaque série/option. Ce réglage est propre à l'année scolaire <b>${esc(anneeActive)}</b> actuellement active : changer d'année scolaire peut donc afficher un nombre de GP différent, sans jamais modifier les classes déjà enregistrées les années précédentes.</div>
+    <form class="entity-form" id="form-parametres-gp" onsubmit="return false;">
+      <div class="form-grid">${gpHTML}</div>
+      <div class="form-actions">
+        <button type="button" class="btn" onclick="paramSaveGP()">Enregistrer le nombre de GP par niveau</button>
+      </div>
+    </form>
 
     <div class="section-title"><h3><span class="bar"></span>Barème de notation par niveau</h3></div>
     <div class="hint-box">Le barème est fixe : <b>Élémentaire et Primaire sur 10</b> (la moyenne est de <b>5/10</b>), <b>Collège et Lycée sur 20</b> (la moyenne est de <b>10/20</b>). La saisie, les moyennes, les mentions (seuil de la moyenne : 5/10 ou 10/20) et les statistiques s'adaptent automatiquement. </div>
@@ -6968,6 +7043,27 @@ function paramSaveFrais(onlyCycle){
   });
   const base = onlyCycle ? 'Frais du cycle « '+CYCLES_TEKOULO[onlyCycle].label+' » enregistrés.' : 'Frais de scolarité des 4 cycles enregistrés.';
   toast(base + (avert.length ? ' Attention : les tranches ne couvrent pas exactement les '+N+' mois de l\u2019année ('+avert.join(', ')+').' : ''), avert.length>0);
+}
+/* Enregistre le nombre de GP par niveau pour l'année scolaire active uniquement (voir figerParametresAnnees) :
+   les années déjà figées gardent leur propre nombre de GP, jamais modifié rétroactivement. */
+function paramSaveGP(){
+  const params = getParams();
+  const gpParNiveau = {...params.gpParNiveau};
+  let erreur = null;
+  document.querySelectorAll('#form-parametres-gp input[data-gp-niveau]').forEach(inp=>{
+    if(erreur) return;
+    const niveau = inp.dataset.gpNiveau;
+    const v = parseInt(inp.value, 10);
+    if(!Number.isFinite(v) || v<1 || v>12){ erreur = niveauLabel(niveau); return; }
+    gpParNiveau[niveau] = v;
+  });
+  if(erreur){ toast('Niveau « '+erreur+' » : le nombre de GP doit être un entier entre 1 et 12.', true); return; }
+  figerParametresAnnees(params);
+  params.gpParNiveau = gpParNiveau;
+  { const ay = getActiveYear(); if(ay && params.gpParNiveauParAnnee) params.gpParNiveauParAnnee[ay] = gpParNiveau; }
+  dbSet('parametres', params);
+  toast('Nombre de GP par niveau enregistré pour l\u2019année scolaire '+(getActiveYear()||params.anneeScolaire)+'.');
+  renderView('parametres');
 }
 function paramMatieresHTML(p){
   const cfg = getMatieresConfig();
@@ -7508,7 +7604,8 @@ function salaireImprimerRecapMensuel(){
     sousTitre: 'Cycle '+cycleLabel+' — Année scolaire '+(getParams().anneeScolaire||''),
     contenuHTML: salaireRecapMensuelHTML(mois, cycle),
     qrType: 'RECAP_SALAIRES_MOIS', qrRef: cycle+'-'+mois, qrExtra: cycleLabel,
-    module: 'salaires', paysage: true, extraCss: 'table th, table td{ font-size:10.5px; }'
+    module: 'salaires', paysage: true, avecStylesApp: true,
+    extraCss: 'table thead th, table tbody td{ font-size:10.5px; padding:6px 8px; } table{table-layout:fixed;} table td, table th{ white-space:normal; word-break:break-word; }'
   });
 }
 /* Rapport de masse salariale tous cycles confondus — réservé au Fondateur, qui seul voit l'ensemble de
@@ -8746,7 +8843,7 @@ const TOUS_LES_MODULES_ADMIN_CYCLE = [
   'orientationChangementLycee','orientationBacLycee','emploi','emploiGeneral','evalplanning',
   'programmeinfo','effectifs','responsablesclasse','transferts','carteScolaire','bibliotheque',
   'livresscolaires','personnel','badgePersonnel','reconnaissancePersonnel','dossierspers',
-  'actesnomination','supervision','groupestech','responsablesecole','discipline',
+  'mutations','actesnomination','supervision','groupestech','responsablesecole','discipline',
   'comitediscipline','remarques','cassociaux','planning','activitesHorsCours',
   'presenceMensuelle','projets','courriers','informations','rapports','bilanAnnuel',
   'parametres','guide','dictionnaire','biographie',
@@ -8760,14 +8857,14 @@ const ROLE_MODULES = {
   chef_etablissement: '*',
   secretariat: '*',   // rôles hérités du mode serveur, conservés tels quels (accès complet)
   consultation: '*',
-  secretaire_general: ['dashboard','statsEtab','rapportGlobal','eleves','effectifs','transferts','carteScolaire','courriers','informations','personnel','badgePersonnel','dossierspers','actesnomination','responsablesecole','rapports','bilanAnnuel','guide','biographie'],
+  secretaire_general: ['dashboard','statsEtab','rapportGlobal','eleves','effectifs','transferts','carteScolaire','courriers','informations','personnel','badgePersonnel','dossierspers','mutations','actesnomination','responsablesecole','rapports','bilanAnnuel','guide','biographie'],
   direction: '*',
   directeur: TOUS_LES_MODULES_ADMIN_CYCLE,
   principal: TOUS_LES_MODULES_ADMIN_CYCLE,
   proviseur: TOUS_LES_MODULES_ADMIN_CYCLE,
-  directeur_etudes: ['statsEtab','rapportGlobal','dashboard','eleves','notes','orientation','orientationChangementLycee','orientationBacLycee','emploi','emploiGeneral','evalplanning','programmeinfo','effectifs','responsablesclasse','transferts','carteScolaire','bibliotheque','livresscolaires','personnel','badgePersonnel','reconnaissancePersonnel','dossierspers','actesnomination','supervision','groupestech','responsablesecole','discipline','comitediscipline','remarques','cassociaux','planning','activitesHorsCours','projets','rapports','bilanAnnuel','guide','biographie'],
-  directeur_adjoint: ['statsEtab','rapportGlobal','dashboard','eleves','notes','orientation','orientationChangementLycee','orientationBacLycee','emploi','emploiGeneral','evalplanning','programmeinfo','effectifs','responsablesclasse','transferts','carteScolaire','bibliotheque','livresscolaires','personnel','badgePersonnel','reconnaissancePersonnel','dossierspers','actesnomination','supervision','groupestech','responsablesecole','discipline','comitediscipline','remarques','cassociaux','planning','activitesHorsCours','projets','rapports','bilanAnnuel','guide','biographie'],
-  censeur: ['statsEtab','rapportGlobal','dashboard','eleves','notes','orientation','orientationChangementLycee','orientationBacLycee','emploi','emploiGeneral','evalplanning','programmeinfo','effectifs','responsablesclasse','transferts','carteScolaire','bibliotheque','livresscolaires','personnel','badgePersonnel','reconnaissancePersonnel','dossierspers','actesnomination','supervision','groupestech','responsablesecole','discipline','comitediscipline','remarques','cassociaux','planning','activitesHorsCours','projets','rapports','bilanAnnuel','guide','biographie'],
+  directeur_etudes: ['statsEtab','rapportGlobal','dashboard','eleves','notes','orientation','orientationChangementLycee','orientationBacLycee','emploi','emploiGeneral','evalplanning','programmeinfo','effectifs','responsablesclasse','transferts','carteScolaire','bibliotheque','livresscolaires','personnel','badgePersonnel','reconnaissancePersonnel','dossierspers','mutations','actesnomination','supervision','groupestech','responsablesecole','discipline','comitediscipline','remarques','cassociaux','planning','activitesHorsCours','projets','rapports','bilanAnnuel','guide','biographie'],
+  directeur_adjoint: ['statsEtab','rapportGlobal','dashboard','eleves','notes','orientation','orientationChangementLycee','orientationBacLycee','emploi','emploiGeneral','evalplanning','programmeinfo','effectifs','responsablesclasse','transferts','carteScolaire','bibliotheque','livresscolaires','personnel','badgePersonnel','reconnaissancePersonnel','dossierspers','mutations','actesnomination','supervision','groupestech','responsablesecole','discipline','comitediscipline','remarques','cassociaux','planning','activitesHorsCours','projets','rapports','bilanAnnuel','guide','biographie'],
+  censeur: ['statsEtab','rapportGlobal','dashboard','eleves','notes','orientation','orientationChangementLycee','orientationBacLycee','emploi','emploiGeneral','evalplanning','programmeinfo','effectifs','responsablesclasse','transferts','carteScolaire','bibliotheque','livresscolaires','personnel','badgePersonnel','reconnaissancePersonnel','dossierspers','mutations','actesnomination','supervision','groupestech','responsablesecole','discipline','comitediscipline','remarques','cassociaux','planning','activitesHorsCours','projets','rapports','bilanAnnuel','guide','biographie'],
   comptable: ['statsEtab','bilanFinEtab','dashboard','apeae','bureauapeae','fraisscolarite','salaires','pretsscolaires','depenses','cotisationssociales','materiel','immobilier','coordonneesgps','dons','rapports','bilanAnnuel','guide','biographie'],
   comptabilite: ['statsEtab','bilanFinEtab','dashboard','apeae','bureauapeae','fraisscolarite','salaires','pretsscolaires','depenses','cotisationssociales','materiel','immobilier','coordonneesgps','dons','rapports','bilanAnnuel','guide','biographie'],
   charge_orientation: ['dashboard','orientation','orientationChangementLycee','orientationBacLycee','eleves','effectifs','carteScolaire','guide','biographie'],
@@ -8867,6 +8964,7 @@ const NAV = [
     {key:'badgePersonnel', label:'Badge du personnel', icon:'🆔'},
     {key:'reconnaissancePersonnel', label:'Certificat de reconnaissance', icon:'🏅'},
     {key:'dossierspers', label:'Dossiers du personnel', icon:'🗄️', badge:()=>dbGet('dossierspers').filter(cycleModuleVisible).length},
+    {key:'mutations', label:'Gestion des mutations', icon:'🔀', badge:()=>dbGet('mutations').filter(cycleModuleVisible).length},
     {key:'actesnomination', label:'Actes de nomination', icon:'📜', badge:()=>dbGet('actesnomination').filter(cycleModuleVisible).length},
     {key:'supervision', label:'Supervision enseignants', icon:'🔍', badge:()=>dbGet('supervision').filter(cycleModuleVisible).length},
     {key:'groupestech', label:'Chefs de groupe technique', icon:'🛠️', badge:()=>dbGet('groupestech').filter(cycleModuleVisible).length},
@@ -8959,6 +9057,7 @@ const PAGE_META = {
   badgePersonnel:{title:'Badge du personnel', crumb:'Personnel / Badge'},
   reconnaissancePersonnel:{title:'Certificat de reconnaissance du personnel', crumb:'Personnel / Certificat de reconnaissance'},
   dossierspers:{title:'Dossiers du personnel', crumb:'Personnel / Dossiers'},
+  mutations:{title:'Gestion des mutations', crumb:'Personnel / Mutations'},
   supervision:{title:'Supervision des enseignants', crumb:'Personnel / Supervision'},
   groupestech:{title:'Chefs de groupe technique', crumb:'Personnel / Groupes techniques'},
   responsablesecole:{title:"Responsables de l'établissement", crumb:'Personnel / Direction'},
@@ -9191,7 +9290,11 @@ let NIVEAUX = [...CYCLES_TEKOULO[TEKOULO_CYCLE_ACTIF].niveaux];
 // 11ème → SL (Série Littéraire) et SS (Série Scientifique) ; 12ème et Terminale → SE, SS, SM (Options
 // Sciences Expérimentales / Sociales / Mathématiques). gpSuffixesPourNiveau() renvoie donc les bons
 // codes selon le niveau, et les autres cycles (Élémentaire, Primaire, Collège) gardent A1 à A4.
-function gpSuffixesPourNiveau(niveau){ return ['A1','A2','A3','A4']; } // 4 GP par niveau (Élémentaire, Primaire, Collège) ou par série/option (Lycée)
+function gpSuffixesPourNiveau(niveau){
+  const brut = parseInt((getParams().gpParNiveau||{})[niveau], 10);
+  const n = (Number.isFinite(brut) && brut>=1) ? Math.min(brut, 12) : 4; // 4 par défaut, 12 GP maximum par niveau
+  return Array.from({length:n}, (_,i)=>'A'+(i+1));
+} // Nombre de GP par niveau (Élémentaire, Primaire, Collège) ou par série/option (Lycée) — réglable dans Paramètres, par année scolaire
 // Séries/options d'un niveau du Lycée (11ème : 2 séries ; 12ème et Terminale : 3 options) ; liste vide hors Lycée.
 function seriesCodesPourNiveau(niveau){ return cyclePourNiveau(niveau)==='LYCEE' ? seriesPourNiveau(niveau) : []; }
 // Libellés complets des classes d'un niveau : « 7EME A1 » hors Lycée ; « 12EME SE A1 » au Lycée (niveau + série/option + GP).
@@ -9207,6 +9310,21 @@ function classesAvecDonnees(niveau, eleves){
   return base.concat(extra);
 }
 function gpLabelPourNiveau(niveau, code){ return 'GP '+code; }
+// Filtrage dynamique du champ GP selon le Niveau choisi dans le formulaire d'inscription des élèves :
+// appelé au onchange du <select> Niveau, il régénère les options du <select> GP (classe) pour ne
+// proposer que les GP du niveau sélectionné (évite les erreurs de saisie du type « 8ème » avec un GP
+// de 7ème). Conserve la sélection GP en cours si elle reste valide pour le nouveau niveau.
+function eleveNiveauChanged(sel){
+  const form = sel.closest('form');
+  if(!form) return;
+  const gpSelect = form.querySelector('[data-f="classe"]');
+  if(!gpSelect) return;
+  const niveau = sel.value;
+  const current = gpSelect.value;
+  const options = niveau ? classesAvecDonnees(niveau, dbGet('eleves')) : classeOptionsCycleActif();
+  gpSelect.innerHTML = '<option value="">—</option>' + options.map(o=>`<option value="${esc(o)}" ${o===current?'selected':''}>${esc(o)}</option>`).join('');
+  gpSelect.classList.remove('invalid');
+}
 function classeOptionsCycleActif(){
   return CYCLES_TEKOULO[TEKOULO_CYCLE_ACTIF].niveaux.flatMap(n => classesPourNiveau(n));
 }
@@ -9260,8 +9378,6 @@ const GENERIC_MODULES = {
       {key:'noNoteMutation', label:'N° note de service mutation', type:'text'},
       {key:'dateMutation', label:'Date de mutation', type:'date'},
       {key:'grade', label:'Grade', type:'text'},
-      {key:'dateDepart', label:'Date de départ', type:'date'},
-      {key:'motifDepart', label:'Motif de départ', type:'text'},
       {key:'appreciation', label:'Appréciation', type:'text', span:2},
     ],
     columns:['matricule','prenoms','nom','sexe','fonction','telephone','typeContrat'],
@@ -9315,6 +9431,22 @@ const GENERIC_MODULES = {
         ? `<button class="icon-btn" onclick="printAttestationPriseService('${r.__id}')">📄 Attestation</button>`
         : '';
     },
+  },
+
+  mutations:{ label:'Gestion des mutations', codePrefix:'MUT',
+    // Anciennement les champs « Date de départ » et « Motif de départ » de la fiche Personnel :
+    // regroupés ici dans un formulaire dédié pour suivre séparément les mouvements (mutation,
+    // démission, retraite, fin de contrat…) de chaque agent, sans encombrer sa fiche d'inscription.
+    fields:[
+      {key:'matricule', label:'Matricule', type:'text'},
+      {key:'prenoms', label:'Prénoms', type:'text'},
+      {key:'nom', label:'Nom', type:'text'},
+      {key:'fonction', label:'Fonction', type:'text'},
+      {key:'dateDepart', label:'Date de départ', type:'date'},
+      {key:'motifDepart', label:'Motif de départ', type:'text'},
+      {key:'observation', label:'Observation', type:'text', span:2},
+    ],
+    columns:['matricule','prenoms','nom','fonction','dateDepart','motifDepart'],
   },
 
   dossierspers:{ label:'Dossiers du personnel', codePrefix:'DOS',
@@ -10944,6 +11076,9 @@ const MATRICULE_LINKS = {
   dossierspers:{ field:'matricule', sources:[
     {collection:'personnel', keyField:'matricule', label:'le Personnel', map:{prenoms:'prenoms', nom:'nom'}},
   ]},
+  mutations:{ field:'matricule', sources:[
+    {collection:'personnel', keyField:'matricule', label:'le Personnel', map:{prenoms:'prenoms', nom:'nom', fonction:'fonction'}},
+  ]},
   responsablesecole:{ field:'matricule', sources:[
     {collection:'personnel', keyField:'matricule', label:'le Personnel', map:{prenoms:'prenoms', nom:'nom', sexe:'sexe', telephone:'telephone', email:'email'}},
   ]},
@@ -12506,7 +12641,7 @@ function setCycleActif(cycle, rerender=true){
 // ci-dessous qui reconstruit toujours les bonnes options selon le niveau, y compris pour le Lycée).
 // Il reste ici en A1-A4 littéral (sans dépendre de SERIES_LYCEE, déclaré plus bas) pour éviter tout
 // risque d'accès à une constante non encore initialisée si le cycle actif au chargement est le Lycée.
-const GP_OPTIONS = NIVEAUX.flatMap(n => ['A1','A2','A3','A4'].map(g=>`${n} ${g}`));
+const GP_OPTIONS = NIVEAUX.flatMap(n => gpSuffixesPourNiveau(n).map(g=>`${n} ${g}`));
 
 /* ---- Calendrier de l'accueil ---- */
 let CAL_STATE = { y: new Date().getFullYear(), m: new Date().getMonth() };
@@ -12674,31 +12809,9 @@ function renderEvalPlanning(container){
   function paint(){
     const filtered = evalCalFiltered();
     container.innerHTML = `
-      <div class="hint-box">Ajoutez une évaluation ci-dessous, puis consultez la vue mensuelle. Modifiez ou supprimez une ligne directement depuis le tableau. Filtrez par niveau et/ou GP (Groupe Pédagogique), puis imprimez ou exportez l'emploi du temps du mois affiché.</div>
-      <div class="card pad" style="margin-bottom:16px;">
-        <h4 id="eval-form-title" style="margin:0 0 12px; color:var(--green-deep); font-family:var(--serif); font-size:15px;">${EVALCAL_EDIT_ID? 'Modifier l\u2019évaluation' : 'Ajouter une évaluation'}</h4>
-        <form id="form-eval-quickadd" class="entity-form" onsubmit="return false;" style="border:none; padding:16px 0 0; box-shadow:none;">
-          <div class="form-grid">
-            <div class="field"><label>Niveau</label><select data-f="niveau" onchange="evalFormSyncSerie(this.closest('form'))">${NIVEAUX.map(n=>`<option value="${n}">${n}</option>`).join('')}</select></div>
-            ${TEKOULO_CYCLE_ACTIF==='LYCEE' ? `<div class="field"><label>Série / Option</label><select data-f="serie"></select></div>` : ''}
-            <div class="field"><label>GP</label><select data-f="classe">${gpSuffixesUnionCycleActif().map(g=>`<option value="${g}">${g}</option>`).join('')}</select></div>
-            <div class="field"><label>Matière</label><input data-f="matiere" type="text" oninput="this.classList.remove('invalid')"></div>
-            <div class="field"><label>Type d'évaluation</label><select data-f="typeEvaluation"><option value="ORALE">ORALE</option><option value="ÉCRITE">ÉCRITE</option></select></div>
-            <div class="field"><label>Date</label><input data-f="dateEvaluation" type="date" oninput="this.classList.remove('invalid')"></div>
-            <div class="field"><label>Heure</label><input data-f="heure" type="text" placeholder="ex : 10h00"></div>
-            <div class="field"><label>Enseignant responsable</label><input data-f="responsable" type="text"></div>
-            <div class="field span-2"><label>Sujet / contenu</label><input data-f="sujetContenu" type="text"></div>
-            <div class="field"><label>Approuvé par le professeur</label><input data-f="approuvePar" type="text" placeholder="Nom du professeur"></div>
-            <div class="field"><label>Observation</label><input data-f="observation" type="text" placeholder="Observation"></div>
-          </div>
-          <div class="form-actions">
-            <button type="button" class="btn" onclick="evalPlanningAddSave()">${EVALCAL_EDIT_ID? 'Enregistrer les modifications' : 'Ajouter à l\u2019emploi du temps'}</button>
-            ${EVALCAL_EDIT_ID? `<button type="button" class="btn ghost" onclick="evalPlanningCancelEdit()">Annuler la modification</button>` : ''}
-            <button type="button" class="btn ghost" onclick="goTo('dashboard')">🏠 Retour au tableau de bord</button>
-          </div>
-        </form>
-      </div>
+      <div class="hint-box">Cliquez sur « ➕ Ajouter une évaluation » pour programmer une évaluation dans une fenêtre dédiée, puis consultez la vue mensuelle ci-dessous. Modifiez ou supprimez une ligne directement depuis le tableau. Filtrez par niveau et/ou GP (Groupe Pédagogique), puis imprimez ou exportez l'emploi du temps du mois affiché.</div>
       <div class="toolbar">
+        <button class="btn" onclick="evalPlanningNew()">➕ Ajouter une évaluation</button>
         <div class="pillbar">
           ${['TOUS',...NIVEAUX].map(n=>`<span class="pill-tab ${EVALCAL_STATE.niveau===n?'active':''}" onclick="evalCalSetNiveau('${n}')">${n==='TOUS'?'Tous niveaux':n}</span>`).join('')}
         </div>
@@ -12714,6 +12827,26 @@ function renderEvalPlanning(container){
       <div class="card pad">
         ${buildEvalTableHTML(EVALCAL_STATE.y, EVALCAL_STATE.m, filtered)}
       </div>
+      <form id="form-eval-quickadd" class="entity-form tk-modal-form" onsubmit="return false;">
+        <h4 id="eval-form-title">${EVALCAL_EDIT_ID? 'Modifier l\u2019évaluation' : 'Ajouter une évaluation'}</h4>
+        <div class="form-grid">
+          <div class="field"><label>Niveau</label><select data-f="niveau" onchange="evalFormSyncSerie(this.closest('form'))">${NIVEAUX.map(n=>`<option value="${n}">${n}</option>`).join('')}</select></div>
+          ${TEKOULO_CYCLE_ACTIF==='LYCEE' ? `<div class="field"><label>Série / Option</label><select data-f="serie"></select></div>` : ''}
+          <div class="field"><label>GP</label><select data-f="classe">${gpSuffixesUnionCycleActif().map(g=>`<option value="${g}">${g}</option>`).join('')}</select></div>
+          <div class="field"><label>Matière</label><input data-f="matiere" type="text" oninput="this.classList.remove('invalid')"></div>
+          <div class="field"><label>Type d'évaluation</label><select data-f="typeEvaluation"><option value="ORALE">ORALE</option><option value="ÉCRITE">ÉCRITE</option></select></div>
+          <div class="field"><label>Date</label><input data-f="dateEvaluation" type="date" oninput="this.classList.remove('invalid')"></div>
+          <div class="field"><label>Heure</label><input data-f="heure" type="text" placeholder="ex : 10h00"></div>
+          <div class="field"><label>Enseignant responsable</label><input data-f="responsable" type="text"></div>
+          <div class="field span-2"><label>Sujet / contenu</label><input data-f="sujetContenu" type="text"></div>
+          <div class="field"><label>Approuvé par le professeur</label><input data-f="approuvePar" type="text" placeholder="Nom du professeur"></div>
+          <div class="field"><label>Observation</label><input data-f="observation" type="text" placeholder="Observation"></div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" onclick="evalPlanningAddSave()">${EVALCAL_EDIT_ID? 'Enregistrer les modifications' : 'Ajouter à l\u2019emploi du temps'}</button>
+          ${EVALCAL_EDIT_ID? `<button type="button" class="btn ghost" onclick="evalPlanningCancelEdit()">Annuler la modification</button>` : ''}
+        </div>
+      </form>
     `;
     evalFormSyncSerie(document.getElementById('form-eval-quickadd'));
   }
@@ -12769,6 +12902,15 @@ function evalPlanningAddSave(){
     toast('Évaluation ajoutée à l\u2019emploi du temps de '+record.niveau+(record.serie?' '+record.serie:'')+' '+record.classe+'.');
   }
   window.__evalCalRepaint && window.__evalCalRepaint();
+  fermerFormulaireModal();
+}
+function evalPlanningNew(){
+  EVALCAL_EDIT_ID = null;
+  window.__evalCalRepaint && window.__evalCalRepaint();
+  setTimeout(()=>{
+    const form = document.getElementById('form-eval-quickadd');
+    if(form) ouvrirFormulaireModal(form);
+  }, 0);
 }
 function evalPlanningEditRow(id){
   const rec = dbGet('evaluations').find(e=>e.__id===id);
@@ -12784,12 +12926,13 @@ function evalPlanningEditRow(id){
     });
     evalFormSyncSerie(form);
     const serieSel = form.querySelector('[data-f="serie"]'); if(serieSel) serieSel.value = rec.serie||'';
-    form.scrollIntoView({behavior:'smooth', block:'start'});
+    ouvrirFormulaireModal(form);
   }, 0);
 }
 function evalPlanningCancelEdit(){
   EVALCAL_EDIT_ID = null;
   window.__evalCalRepaint && window.__evalCalRepaint();
+  fermerFormulaireModal();
 }
 function evalPlanningDeleteRow(id){
   if(!confirm('Supprimer définitivement cette évaluation ?')) return;
@@ -13431,7 +13574,10 @@ function renderEleves(container){
   function fieldInput(f, val, excludeId){
     val = val===undefined?'':val;
     excludeId = excludeId || '';
-    if(f.type==='select') return `<select data-f="${f.key}" onchange="this.classList.remove('invalid')"><option value="">—</option>${f.options.map(o=>`<option value="${esc(o)}" ${val===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+    if(f.type==='select'){
+      const extraOnchange = f.key==='niveau' ? ' eleveNiveauChanged(this);' : '';
+      return `<select data-f="${f.key}" onchange="this.classList.remove('invalid');${extraOnchange}"><option value="">—</option>${f.options.map(o=>`<option value="${esc(o)}" ${val===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+    }
     if(f.type==='photo'){
       return `<div class="photo-upload">
         <img id="photo-preview-${f.key}" class="photo-preview" src="${val||''}" style="${val?'':'display:none;'}">
@@ -13457,6 +13603,9 @@ function renderEleves(container){
         ${champsEleves().map(f=>{
           let val = rec[f.key];
           if(!rec.__id && val===undefined && f.key==='profil') val = 'ENSEIGNEMENT GÉNÉRAL';
+          // Le GP (classe) n'affiche que les groupes du Niveau déjà choisi sur cette fiche (voir
+          // aussi eleveNiveauChanged, qui filtre en direct au changement de Niveau dans le formulaire).
+          if(f.key==='classe') f = {...f, options: rec.niveau ? classesAvecDonnees(rec.niveau, items) : classeOptionsCycleActif()};
           return `<div class="field ${f.span===2?'span-2':''}"><label>${esc(f.label)}</label>${fieldInput(f, val, rec.__id)}</div>`;
         }).join('')}
       </div>
@@ -13563,7 +13712,10 @@ function renderEleveEditing(container, rec){
   const wrapper = document.createElement('div');
   function fieldInput(f, val){
     val = val===undefined?'':val;
-    if(f.type==='select') return `<select data-f="${f.key}" onchange="this.classList.remove('invalid')"><option value="">—</option>${f.options.map(o=>`<option value="${esc(o)}" ${val===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+    if(f.type==='select'){
+      const extraOnchange = f.key==='niveau' ? ' eleveNiveauChanged(this);' : '';
+      return `<select data-f="${f.key}" onchange="this.classList.remove('invalid');${extraOnchange}"><option value="">—</option>${f.options.map(o=>`<option value="${esc(o)}" ${val===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+    }
     if(f.type==='photo'){
       return `<div class="photo-upload">
         <img id="photo-preview-${f.key}" class="photo-preview" src="${val||''}" style="${val?'':'display:none;'}">
@@ -13583,7 +13735,12 @@ function renderEleveEditing(container, rec){
   wrapper.innerHTML = `<form class="entity-form tk-modal-form" id="form-eleves" onsubmit="return false;">
       <h4>Modifier la fiche de l'élève</h4>
       <div class="form-grid">
-        ${champsEleves().map(f=>`<div class="field ${f.span===2?'span-2':''}"><label>${esc(f.label)}</label>${fieldInput(f, rec[f.key])}</div>`).join('')}
+        ${champsEleves().map(f=>{
+          // Le GP (classe) n'affiche que les groupes du Niveau déjà choisi sur cette fiche (voir
+          // aussi eleveNiveauChanged, qui filtre en direct au changement de Niveau dans le formulaire).
+          if(f.key==='classe') f = {...f, options: rec.niveau ? classesAvecDonnees(rec.niveau, dbGet('eleves')) : classeOptionsCycleActif()};
+          return `<div class="field ${f.span===2?'span-2':''}"><label>${esc(f.label)}</label>${fieldInput(f, rec[f.key])}</div>`;
+        }).join('')}
       </div>
       <div class="form-actions">
         <button type="button" class="btn" onclick="eleveSave('${rec.__id}')">Enregistrer les modifications</button>
@@ -16214,7 +16371,7 @@ function emploiTitreClasse(niveau, serie, gp){ return niveau+(serie?' · '+emplo
 
 function renderEmploi(container){
   function paint(){
-    if(!GP_SUFFIXES.includes(EMPLOI_GP)) EMPLOI_GP = 'A1';
+    if(!gpSuffixesPourNiveau(EMPLOI_NIVEAU).includes(EMPLOI_GP)) EMPLOI_GP = gpSuffixesPourNiveau(EMPLOI_NIVEAU)[0] || 'A1';
     EMPLOI_SERIE = emploiSerieValide();
     const key = emploiKey(EMPLOI_NIVEAU, EMPLOI_SERIE, EMPLOI_GP);
     const grid = dbGet(key, {});
@@ -16621,6 +16778,107 @@ let assistantDernierCoursMeta = null; // {matiere, niveau, chapitre, titre, sous
 let assistantDernierProjetMeta = null; // {titre, type, beneficiaires, duree, budget, ressources, contexte, objectifs} du dernier projet généré
 let coursProgrammeFichier = null; // {nom, mediaType, base64} du fichier de répartition du programme importé pour le mode "cours"
 let coursRepartitionDetectee = []; // liste des cours {matiere, niveau, chapitre, titre, sousTitres} extraits automatiquement de la répartition importée
+let _assistantDerniereQuestion = ''; // dernière question affichée dans le fil (pour l'archivage d'une réponse)
+const ASSISTANT_MODE_LABELS = {general:'💬 Question libre', reunion:'📝 Compte-rendu', lettre:'📄 Lettre officielle', notes:'🗒️ Organiser des notes', traduire:'🈯 Traduire un mot'};
+
+/* ---------- Archives des réponses de l'assistant (Question libre, Compte-rendu, Lettre, Notes, Traduction) ----------
+   Chaque réponse archivée par l'utilisateur (bouton « 📦 Archiver » sous la réponse) est enregistrée ici avec
+   la question associée, pour être retrouvée plus tard sans avoir à la régénérer. Les cours et projets ont déjà
+   leur propre banque automatique (ci-dessous) et ne sont pas concernés par cette archive manuelle. */
+function assistantArchivesListe(){ return dbGet('assistantArchives', []); }
+function assistantArchiverReponse(question, reponse, mode){
+  const liste = assistantArchivesListe();
+  liste.unshift({id:'a'+Date.now()+Math.random().toString(36).slice(2,7), question:question||'', reponse, mode:mode||'general', dateArchivage:new Date().toISOString()});
+  dbSet('assistantArchives', liste);
+  renderAssistantArchivesListe();
+}
+function assistantArchivesSupprimer(id){
+  if(!confirm('Supprimer cette réponse archivée ?')) return;
+  dbSet('assistantArchives', assistantArchivesListe().filter(a=>a.id!==id));
+  renderAssistantArchivesListe();
+}
+function assistantArchivesTrouver(id){ return assistantArchivesListe().find(a=>a.id===id); }
+function assistantArchivesImprimer(id){ const r = assistantArchivesTrouver(id); if(r) imprimerTexteAssistant(r.reponse); }
+function assistantArchivesTelecharger(id){ const r = assistantArchivesTrouver(id); if(r) telechargerTexteCommeFichier(r.reponse, null); }
+function assistantArchivesApercu(id){ const r = assistantArchivesTrouver(id); if(r) reponseApercuOuvrir(r); }
+// Ouvre (déplie) la banque d'archives et l'actualise — appelée par le bouton « 📦 Archives » de l'en-tête.
+function assistantOuvrirArchives(){
+  const zone = document.getElementById('assistant-archives-banque');
+  if(zone){ zone.open = true; zone.scrollIntoView({behavior:'smooth', block:'start'}); }
+  renderAssistantArchivesListe();
+}
+function renderAssistantArchivesListe(){
+  const zone = document.getElementById('assistant-archives-liste');
+  if(!zone) return;
+  const liste = assistantArchivesListe();
+  const compteur = document.getElementById('assistant-archives-compteur');
+  if(compteur) compteur.textContent = liste.length ? (liste.length+' archivée'+(liste.length>1?'s':'')) : '';
+  if(!liste.length){
+    zone.innerHTML = '<div class=\"ia-vide\">Aucune réponse archivée pour l\u2019instant. Utilisez le bouton « 📦 Archiver » sous une réponse de l\u2019assistant pour la conserver ici.</div>';
+    return;
+  }
+  zone.innerHTML = liste.map(function(a){
+    const modeLabel = ASSISTANT_MODE_LABELS[a.mode] || '💬 Question libre';
+    const date = a.dateArchivage ? new Date(a.dateArchivage).toLocaleDateString('fr-FR', {day:'2-digit', month:'short', year:'numeric'}) : '';
+    const titreCourt = (a.question || 'Réponse sans question').slice(0,90);
+    return '<div class="ia-cours-item">'
+      + '<div class="ia-cours-item-txt">'
+      +   '<div class="ia-cours-item-titre">'+esc(titreCourt)+'</div>'
+      +   '<div class="ia-cours-item-meta">'+esc(modeLabel)+(date?' · '+date:'')+'</div>'
+      + '</div>'
+      + '<div class="ia-cours-item-actions">'
+      +   '<button title="Aperçu complet" onclick="assistantArchivesApercu(\''+a.id+'\')">👁️</button>'
+      +   '<button title="Imprimer" onclick="assistantArchivesImprimer(\''+a.id+'\')">🖨️</button>'
+      +   '<button title="Télécharger" onclick="assistantArchivesTelecharger(\''+a.id+'\')">⭳</button>'
+      +   '<button title="Supprimer" onclick="assistantArchivesSupprimer(\''+a.id+'\')" class="ia-danger">✕</button>'
+      + '</div>'
+    + '</div>';
+  }).join('');
+}
+// Aperçu plein écran d'une réponse archivée (question + réponse complète), réutilise le style des aperçus de cours/projets.
+function reponseApercuOuvrir(rec){
+  let modal = document.getElementById('reponse-apercu-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'reponse-apercu-modal';
+    modal.className = 'ia-apercu-fond';
+    modal.innerHTML =
+      '<div class=\"ia-apercu-boite\">'
+      + '<div class=\"ia-apercu-entete\">'
+      +   '<span id=\"reponse-apercu-titre\">Réponse archivée</span>'
+      +   '<button type=\"button\" onclick=\"reponseApercuFermer()\" title=\"Fermer\">✕</button>'
+      + '</div>'
+      + '<div class=\"ia-apercu-fiche\" id=\"reponse-apercu-fiche\"></div>'
+      + '<div class=\"ia-apercu-corps\" id=\"reponse-apercu-corps\"></div>'
+      + '<div class=\"ia-apercu-pied\">'
+      +   '<button type=\"button\" id=\"reponse-apercu-print-btn\">🖨️ Imprimer</button>'
+      +   '<button type=\"button\" id=\"reponse-apercu-dl-btn\">⭳ Télécharger</button>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(modal);
+    modal.addEventListener('click', function(ev){ if(ev.target===modal) reponseApercuFermer(); });
+  }
+  const modeLabel = ASSISTANT_MODE_LABELS[rec.mode] || rec.mode || '💬 Question libre';
+  const date = rec.dateArchivage ? new Date(rec.dateArchivage).toLocaleDateString('fr-FR', {day:'2-digit', month:'long', year:'numeric'}) : '';
+  document.getElementById('reponse-apercu-titre').textContent = modeLabel;
+  const ficheZone = document.getElementById('reponse-apercu-fiche');
+  ficheZone.style.display = 'block';
+  ficheZone.innerHTML = '<table>'
+    + (rec.question ? '<tr><td class=\"lbl\">Question</td><td>'+esc(rec.question)+'</td></tr>' : '')
+    + '<tr><td class=\"lbl\">Archivée le</td><td>'+esc(date)+'</td></tr>'
+    + '</table>';
+  assistantRendreContenu(document.getElementById('reponse-apercu-corps'), rec.reponse);
+  document.getElementById('reponse-apercu-print-btn').onclick = function(){ imprimerTexteAssistant(rec.reponse); };
+  document.getElementById('reponse-apercu-dl-btn').onclick = function(){ telechargerTexteCommeFichier(rec.reponse, null); };
+  modal.style.display = 'flex';
+  requestAnimationFrame(function(){ modal.classList.add('ouvert'); });
+}
+function reponseApercuFermer(){
+  const modal = document.getElementById('reponse-apercu-modal');
+  if(!modal) return;
+  modal.classList.remove('ouvert');
+  setTimeout(function(){ modal.style.display = 'none'; }, 150);
+}
 
 /* ---------- Stockage des cours générés (banque de cours, conforme à la répartition) ---------- */
 // Chaque cours généré (manuellement ou via la répartition) est enregistré ici, avec le contenu
@@ -17215,6 +17473,7 @@ function ouvrirFermerAssistant(){
     document.getElementById('assistant-input').focus();
     renderCoursGeneresListe();
     renderProjetsGeneresListe();
+    renderAssistantArchivesListe();
   }
 }
 // Efface l'historique de la conversation en cours (questions/réponses affichées et mémoire
@@ -17307,6 +17566,7 @@ function assistantAjouterMessage(role, texte, metaCours, metaProjet){
   const zone = document.getElementById('assistant-messages');
   const div = document.createElement('div');
   div.className = 'ia-msg ' + (role==='user' ? 'ia-msg-user' : 'ia-msg-assistant');
+  if(role==='user'){ _assistantDerniereQuestion = texte; } // conservée pour l'archivage de la réponse qui va suivre
   if(role==='assistant'){
     assistantRendreContenu(div, texte);
   } else {
@@ -17314,6 +17574,8 @@ function assistantAjouterMessage(role, texte, metaCours, metaProjet){
   }
   zone.appendChild(div);
   if(role==='assistant'){
+    const questionAssociee = _assistantDerniereQuestion;
+    const modeAssocie = assistantMode;
     const barreActions = document.createElement('div');
     barreActions.className = 'ia-msg-actions';
     if(metaCours){
@@ -17326,6 +17588,22 @@ function assistantAjouterMessage(role, texte, metaCours, metaProjet){
       btnApercu.textContent = '👁️ Aperçu complet';
       btnApercu.onclick = function(){ projetApercuOuvrir(texte, metaProjet); };
       barreActions.appendChild(btnApercu);
+    }
+    // Une réponse de « Question libre », « Compte-rendu », « Lettre officielle », « Organiser des notes »
+    // ou « Traduire un mot » n'est PAS enregistrée automatiquement (contrairement aux cours et projets,
+    // ci-dessous) : ce bouton permet de l'archiver volontairement pour la retrouver plus tard.
+    if(!metaCours && !metaProjet){
+      const btnArch = document.createElement('button');
+      btnArch.textContent = '📦 Archiver';
+      btnArch.onclick = function(){
+        assistantArchiverReponse(questionAssociee, texte, modeAssocie);
+        btnArch.textContent = '✅ Archivé';
+        btnArch.disabled = true;
+        const champSaisie = document.getElementById('assistant-input');
+        if(champSaisie) champSaisie.value = ''; // le champ de saisie est vidé automatiquement à chaque archivage
+        toast('📦 Réponse archivée — retrouvable dans « 📦 Archives ».');
+      };
+      barreActions.appendChild(btnArch);
     }
     const btnDl = document.createElement('button');
     btnDl.textContent = '⭳ Télécharger';
@@ -18340,13 +18618,14 @@ function figerColonnesPlanifier(root){
 
 #cours-programme-apercu{ display:none; margin-top:6px; font-size:11.5px; color:var(--ink-soft,#666); background:#fff; border:1px solid var(--line,#ddd); border-radius:6px; padding:6px 8px; align-items:center; justify-content:space-between; gap:8px; }
 
-.ia-cours-banque, .ia-projets-banque{ border-top:1px solid var(--line,#ddd); background:#fff; flex-shrink:0; }
-.ia-cours-banque summary, .ia-projets-banque summary{ list-style:none; cursor:pointer; padding:10px 14px; font-size:12px; font-weight:700; color:var(--green-deep); display:flex; align-items:center; justify-content:space-between; user-select:none; }
-.ia-cours-banque summary::-webkit-details-marker, .ia-projets-banque summary::-webkit-details-marker{ display:none; }
+.ia-cours-banque, .ia-projets-banque, .ia-archives-banque{ border-top:1px solid var(--line,#ddd); background:#fff; flex-shrink:0; }
+.ia-cours-banque summary, .ia-projets-banque summary, .ia-archives-banque summary{ list-style:none; cursor:pointer; padding:10px 14px; font-size:12px; font-weight:700; color:var(--green-deep); display:flex; align-items:center; justify-content:space-between; user-select:none; }
+.ia-cours-banque summary::-webkit-details-marker, .ia-projets-banque summary::-webkit-details-marker, .ia-archives-banque summary::-webkit-details-marker{ display:none; }
 .ia-cours-banque summary::before{ content:'📚 Cours enregistrés'; }
 .ia-projets-banque summary::before{ content:'🏗️ Projets enregistrés'; }
-.ia-cours-banque summary #cours-generes-compteur, .ia-projets-banque summary #projets-generes-compteur{ font-weight:600; color:var(--ink-soft); font-size:11px; }
-#cours-generes-liste{ max-height:180px; overflow-y:auto; padding:0 14px 10px; }
+.ia-archives-banque summary::before{ content:'📦 Réponses archivées'; }
+.ia-cours-banque summary #cours-generes-compteur, .ia-projets-banque summary #projets-generes-compteur, .ia-archives-banque summary #assistant-archives-compteur{ font-weight:600; color:var(--ink-soft); font-size:11px; }
+#cours-generes-liste, #assistant-archives-liste{ max-height:180px; overflow-y:auto; padding:0 14px 10px; }
 .ia-vide{ font-size:11.5px; color:var(--ink-soft); padding:6px 0 4px; line-height:1.5; }
 .ia-cours-item{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 0; border-bottom:1px solid var(--line-soft); }
 .ia-cours-item:last-child{ border-bottom:none; }
@@ -18443,6 +18722,7 @@ function figerColonnesPlanifier(root){
   <div class="ia-entete">
     <span>🤖 Assistant Tekoulo</span>
     <span class="ia-entete-actions">
+      <button onclick="assistantOuvrirArchives()" title="Voir les réponses archivées">📦 Archives</button>
       <button onclick="assistantEffacerHistorique()" title="Effacer l'historique de la conversation">🗑️</button>
       <button onclick="ouvrirFermerAssistant()" title="Fermer">✕</button>
     </span>
@@ -18590,6 +18870,10 @@ function figerColonnesPlanifier(root){
   <details class="ia-projets-banque">
     <summary><span id="projets-generes-compteur"></span></summary>
     <div id="projets-generes-liste"></div>
+  </details>
+  <details class="ia-archives-banque" id="assistant-archives-banque">
+    <summary><span id="assistant-archives-compteur"></span></summary>
+    <div id="assistant-archives-liste"></div>
   </details>
   </div>
 
