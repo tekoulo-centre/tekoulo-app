@@ -2,15 +2,25 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Collège Tekoulo Centre — Base de Données de Gestion</title>
+<meta name="description" content="Application de gestion scolaire du Collège Tekoulo Centre (Guéckédou, Guinée) : élèves, personnel, notes, finances, salaires et emplois du temps, en ligne comme hors connexion.">
+<meta name="application-name" content="Albert Digital Guinée">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+<link rel="shortcut icon" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
-<meta name="theme-color" content="#7a1f1f">
+<link rel="apple-touch-icon" sizes="192x192" href="icon-192.png">
+<meta name="theme-color" content="#0B4A32">
+<meta name="msapplication-TileColor" content="#0B4A32">
+<meta name="msapplication-TileImage" content="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Tekoulo Centre">
+<meta name="apple-mobile-web-app-title" content="Albert Digital Guinée">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,500&family=Playfair+Display:wght@600;700;900&display=swap" rel="stylesheet">
 <style>
@@ -84,7 +94,7 @@
   /* ===== Splash screen Albert Digital (écran de bienvenue au lancement) ===== */
   #albert-splash{
     position:fixed; inset:0; z-index:99999;
-    display:flex; align-items:center; justify-content:center;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
     background:
       radial-gradient(900px 500px at 15% 10%, rgba(41,121,255,.16), transparent 60%),
       radial-gradient(900px 550px at 88% 92%, rgba(80,160,255,.12), transparent 60%),
@@ -97,15 +107,25 @@
   }
   .albert-splash-inner{
     display:flex; flex-direction:column; align-items:center; justify-content:center;
-    text-align:center; padding:0 24px;
+    text-align:center; padding:0 24px; max-width:360px;
     animation: albertSplashRise .7s cubic-bezier(.2,.8,.2,1) both .05s;
   }
   .albert-splash-logo-wrap{
-    width:112px; height:112px; margin-bottom:18px;
+    width:112px; height:112px; margin-bottom:20px;
     filter: drop-shadow(0 8px 26px rgba(41,121,255,.35));
     animation: albertSplashPulse 2.4s ease-in-out infinite;
+    display:flex; align-items:center; justify-content:center;
   }
   .albert-splash-logo{width:100%; height:100%; object-fit:contain; border-radius:22px;}
+  /* Si icon-512.png ne charge pas (ex. tout premier lancement hors connexion avant mise en cache), un
+     monogramme dégradé garde un rendu soigné plutôt qu'une icône cassée. */
+  .albert-splash-logo-wrap.albert-splash-logo-fallback{
+    border-radius:22px; background:linear-gradient(135deg,#3d8bff,#1a4fbf);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.18);
+  }
+  .albert-splash-logo-wrap.albert-splash-logo-fallback::after{
+    content:'TC'; font-family:var(--sans); font-weight:800; font-size:38px; letter-spacing:1px; color:#fff;
+  }
   .albert-splash-word{
     font-family:var(--sans); font-weight:800; font-size:26px; letter-spacing:2px;
     color:#f2f6ff; text-transform:uppercase;
@@ -114,29 +134,45 @@
     background:linear-gradient(90deg,#3d8bff,#8fc4ff);
     -webkit-background-clip:text; background-clip:text; color:transparent;
   }
+  .albert-splash-divider{
+    width:44px; height:2px; margin:14px auto 0; border-radius:2px;
+    background:linear-gradient(90deg,var(--gold-bright,#F4C948),var(--gold,#E4B426));
+    box-shadow:0 0 10px rgba(228,180,38,.5);
+  }
   .albert-splash-tagline{
-    margin-top:10px; font-family:var(--sans); font-size:13.5px; letter-spacing:.3px;
-    color:rgba(230,238,255,.85); max-width:300px;
+    margin-top:12px; font-family:var(--sans); font-weight:700; font-size:15px; letter-spacing:.3px;
+    color:#f2f6ff; max-width:300px;
   }
   .albert-splash-tagline.albert-splash-sub{
-    margin-top:6px; font-size:11.5px; color:rgba(230,238,255,.5);
+    margin-top:3px; font-weight:400; font-size:11.5px; color:rgba(230,238,255,.55);
   }
-  .albert-splash-loader{display:flex; gap:6px; margin-top:26px;}
-  .albert-splash-loader span{
-    width:7px; height:7px; border-radius:50%;
-    background:linear-gradient(135deg,#3d8bff,#8fc4ff);
-    animation: albertSplashDot 1s ease-in-out infinite;
+  .albert-splash-progress{
+    width:180px; height:3px; margin-top:28px; border-radius:3px; overflow:hidden;
+    background:rgba(255,255,255,.12);
   }
-  .albert-splash-loader span:nth-child(2){animation-delay:.15s;}
-  .albert-splash-loader span:nth-child(3){animation-delay:.3s;}
+  .albert-splash-progress-bar{
+    width:0%; height:100%; border-radius:3px;
+    background:linear-gradient(90deg,#3d8bff,#8fc4ff);
+    transition:width linear;
+  }
+  .albert-splash-status{
+    margin-top:12px; font-family:var(--sans); font-size:11px; letter-spacing:.2px;
+    color:rgba(230,238,255,.6); min-height:15px;
+    animation: albertSplashTextFade .5s ease both;
+  }
+  .albert-splash-footer{
+    position:absolute; left:0; right:0; bottom:22px; text-align:center;
+    font-family:var(--sans); font-size:10.5px; letter-spacing:.4px;
+    color:rgba(230,238,255,.32);
+  }
 
   @keyframes albertSplashFadeIn{ from{opacity:0;} to{opacity:1;} }
   @keyframes albertSplashFadeOut{ from{opacity:1; transform:translateY(0) scale(1);} to{opacity:0; transform:translateY(-18px) scale(.98);} }
   @keyframes albertSplashRise{ from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);} }
   @keyframes albertSplashPulse{ 0%,100%{transform:scale(1);} 50%{transform:scale(1.045);} }
-  @keyframes albertSplashDot{ 0%,80%,100%{opacity:.3; transform:scale(.75);} 40%{opacity:1; transform:scale(1);} }
+  @keyframes albertSplashTextFade{ from{opacity:0; transform:translateY(3px);} to{opacity:1; transform:translateY(0);} }
   @media (prefers-reduced-motion: reduce){
-    #albert-splash, #albert-splash.albert-splash-out, .albert-splash-inner, .albert-splash-logo-wrap, .albert-splash-loader span{
+    #albert-splash, #albert-splash.albert-splash-out, .albert-splash-inner, .albert-splash-logo-wrap, .albert-splash-progress-bar, .albert-splash-status{
       animation:none !important; transition:none !important;
     }
   }
@@ -1217,14 +1253,18 @@
 <!-- ===================== SPLASH ALBERT DIGITAL ===================== -->
 <div id="albert-splash" role="status" aria-live="polite">
   <div class="albert-splash-inner">
-    <div class="albert-splash-logo-wrap">
-      <img src="icon-512.png" alt="Albert Digital" class="albert-splash-logo" width="512" height="512" fetchpriority="high">
+    <div class="albert-splash-logo-wrap" id="albert-splash-logo-wrap">
+      <img src="icon-512.png" alt="Albert Digital" class="albert-splash-logo" width="512" height="512" fetchpriority="high"
+        onerror="this.remove(); document.getElementById('albert-splash-logo-wrap').classList.add('albert-splash-logo-fallback');">
     </div>
     <div class="albert-splash-word">ALBERT <span>DIGITAL</span> GUINÉE</div>
-    <div class="albert-splash-tagline">Bienvenue dans l'application Albert Digital Guinée</div>
-    <div class="albert-splash-tagline albert-splash-sub">Collège Tekoulo Centre — Base de Données de Gestion</div>
-    <div class="albert-splash-loader"><span></span><span></span><span></span></div>
+    <div class="albert-splash-divider"></div>
+    <div class="albert-splash-tagline">Collège Tekoulo Centre</div>
+    <div class="albert-splash-tagline albert-splash-sub">Base de données de gestion scolaire</div>
+    <div class="albert-splash-progress"><div class="albert-splash-progress-bar" id="albert-splash-bar"></div></div>
+    <div class="albert-splash-status" id="albert-splash-status">Chargement de l'application…</div>
   </div>
+  <div class="albert-splash-footer">Guéckédou · République de Guinée</div>
 </div>
 
 <div id="toast-host"></div>
@@ -18884,28 +18924,65 @@ function figerColonnesPlanifier(root){
 </div>
 
 <script>
-/* ===================== SPLASH ALBERT DIGITAL (v1) =====================
+/* ===================== SPLASH ALBERT DIGITAL (v2 — professionnalisé) =====================
    Écran de bienvenue affiché au lancement de l'application (icône bureau /
    PWA / rechargement), avant l'affichage de la page d'accueil — sur le
-   principe du splash screen de Word. Purement cosmétique : ne modifie
-   aucune logique d'authentification ni d'affichage existante, il se
-   contente de se superposer puis de disparaître tout seul. */
+   principe du splash screen des grandes applications professionnelles :
+   progression visible, messages d'étape, et disparition en fondu une fois
+   l'application réellement prête. Purement cosmétique : ne modifie aucune
+   logique d'authentification ni d'affichage existante. */
 (function(){
   const splash = document.getElementById('albert-splash');
   if(!splash) return;
+  const bar = document.getElementById('albert-splash-bar');
+  const statusEl = document.getElementById('albert-splash-status');
   const MIN_DISPLAY_MS = 3000; // durée minimale à l'écran, même si tout charge instantanément
   const MAX_WAIT_MS = 6000;    // filet de sécurité : ne jamais bloquer l'app plus de 6s
+  // Étapes affichées successivement pendant le chargement, pour donner une impression de
+  // progression réelle et structurée plutôt qu'une simple attente indéterminée.
+  const ETAPES = [
+    'Chargement de l\u2019application…',
+    'Préparation de votre espace…',
+    'Vérification des données locales…',
+    'Presque prêt…'
+  ];
   const startedAt = Date.now();
   let dismissed = false;
+  let etapeIdx = 0;
+  let etapeTimer = null;
+
+  // Barre de progression : montée régulière jusqu'à 92% pendant la durée minimale d'affichage,
+  // puis complétée à 100% juste avant la disparition (jamais figée avant la fin réelle du chargement).
+  if(bar){
+    bar.style.transitionDuration = MIN_DISPLAY_MS+'ms';
+    requestAnimationFrame(()=>{ bar.style.width = '92%'; });
+  }
+  if(statusEl){
+    etapeTimer = setInterval(()=>{
+      etapeIdx = (etapeIdx+1) % ETAPES.length;
+      statusEl.style.animation = 'none';
+      statusEl.offsetHeight; // relance l'animation d'apparition du texte
+      statusEl.style.animation = '';
+      statusEl.textContent = ETAPES[etapeIdx];
+    }, Math.max(600, Math.floor(MIN_DISPLAY_MS/ETAPES.length)));
+  }
+
   function dismiss(){
     if(dismissed) return;
     dismissed = true;
+    clearInterval(etapeTimer);
     const elapsed = Date.now() - startedAt;
     const wait = Math.max(0, MIN_DISPLAY_MS - elapsed);
     setTimeout(()=>{
-      splash.classList.add('albert-splash-out');
-      splash.addEventListener('transitionend', ()=>{ splash.remove(); }, {once:true});
-      setTimeout(()=>{ if(splash.parentNode) splash.remove(); }, 900); // filet si transitionend ne se déclenche pas
+      if(bar){ bar.style.transitionDuration = '250ms'; bar.style.width = '100%'; }
+      if(statusEl) statusEl.textContent = 'Prêt.';
+      setTimeout(()=>{
+        splash.classList.add('albert-splash-out');
+        // L'animation de sortie est une "animation" CSS (pas une "transition") : c'est donc
+        // l'événement "animationend" qu'il faut écouter, avec un filet de sécurité au cas où.
+        splash.addEventListener('animationend', ()=>{ splash.remove(); }, {once:true});
+        setTimeout(()=>{ if(splash.parentNode) splash.remove(); }, 900);
+      }, 220);
     }, wait);
   }
   if(document.readyState === 'complete'){ dismiss(); }
