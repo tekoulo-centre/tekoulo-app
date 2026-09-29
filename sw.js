@@ -1,8 +1,14 @@
 /* Service worker minimal — condition d'installabilité PWA sur Chrome/Edge (Android et ordinateur),
    et bonus : l'application continue de s'ouvrir même sans connexion internet, une fois visitée une
    première fois. Stratégie « réseau d'abord, cache en secours » : la dernière version en ligne est
-   toujours privilégiée quand la connexion est bonne, pour ne jamais servir une version périmée. */
-const CACHE_NAME = 'tekoulo-centre-v1';
+   toujours privilégiée quand la connexion est bonne, pour ne jamais servir une version périmée.
+
+   ⚠️ À FAIRE À CHAQUE NOUVELLE PUBLICATION : incrémenter SW_VERSION ci-dessous (ex. 1 → 2).
+   Sans ça, le navigateur ne détecte jamais la nouvelle version de ce fichier et continue d'utiliser
+   l'ancien cache indéfiniment — c'est exactement ce qui a bloqué la mise à jour précédente.
+   Idée simple : gardez ce numéro aligné sur VERSION_APP dans index.html. */
+const SW_VERSION = 1;
+const CACHE_NAME = 'tekoulo-centre-v' + SW_VERSION;
 const CORE_ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './favicon-32.png'];
 
 self.addEventListener('install', (event) => {
@@ -22,7 +28,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   event.respondWith(
-    fetch(event.request).then(response => {
+    fetch(event.request, {cache:'no-store'}).then(response => {
       const copy = response.clone();
       caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy)).catch(()=>{});
       return response;
